@@ -147,3 +147,15 @@ judge). Once M0 builds it graduates to product-usage evaluators (real users of t
 are **not run yet** — this is scaffolding. To run a round, read `eval/README.md` and follow the
 `evaluators → aggregator → analyst → implement → measure delta` mechanics. Personas live in
 `eval/personas/`, challenges in `eval/challenges/bank.json`, pipeline prompts in `eval/prompts/`.
+
+## Recommended skills (Matt Pocock's "Skills For Real Engineers")
+
+Installed as plugin `mattpocock-skills` (source: `/Users/bobbyrathore/Documents/WildProjects/skills`).
+Use them — see `PROMPT.md` §7b for the phase mapping. Quick reference:
+
+- `grill-with-docs` — grill yourself against the spec/design before M0 and each milestone.
+- `tdd` — the core build loop (pairs with our must-fail-negative-control discipline).
+- `diagnose` — disciplined failure loop when M0 or a milestone breaks.
+- `handoff` — compact the conversation at session end (complements the persistent `HANDOFF.md`).
+- `to-prd` / `to-issues` — turn `docs/plan.md` into trackable issues.
+- `zoom-out` — when lost in the borrowed source repos.

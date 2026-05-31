@@ -4,6 +4,10 @@
 > bottom, then **begin**. You are expected to work continuously — day and night, across many
 > context windows and successor agents — until the Definition of Done is met. Nobody is
 > waiting at the keyboard. Make sound decisions, record them, and keep going.
+>
+> **This file (PROMPT.md) is your immutable constitution — never edit it.** All evolving
+> state, decisions, and progress go in `HANDOFF.md`. PROMPT.md is authored once and read by
+> every session forever; keeping it stable is what prevents game-of-telephone drift.
 
 ---
 
@@ -189,6 +193,28 @@ When done: write the final `HANDOFF.md` ("STATUS: COMPLETE"), a `docs/journal/` 
 commit, and produce a 1-page `DEMO.md` (what to run, what the judge will see, why it's honest).
 
 ---
+
+## 7b. Recommended skills (Matt Pocock's "Skills For Real Engineers")
+
+A curated skill set is installed (plugin `mattpocock-skills`; source at
+`/Users/bobbyrathore/Documents/WildProjects/skills`). Use them — they are battle-tested for
+real engineering, not vibe-coding. Map to your phases:
+
+- **`grill-with-docs`** — BEFORE M0 and before each milestone: grill yourself against
+  `docs/spec.md` + `docs/design.md`, sharpen terminology, and keep docs honest. Our specs are
+  dense; misreading them is the cheapest mistake to avoid.
+- **`tdd`** — your core build loop. Red-green-refactor pairs exactly with this project's ethos
+  (one falsifiable claim, every correctness test carries a must-fail negative control).
+- **`diagnose`** — when M0 or any milestone fails: disciplined reproduce → minimise → hypothesise
+  → instrument → fix → regression-test. Do NOT flail; run this loop.
+- **`handoff`** — at the END of a long session, to compact the *conversation* into a temp summary
+  for the next agent. This COMPLEMENTS (does not replace) the persistent in-repo `HANDOFF.md`:
+  `HANDOFF.md` is durable project state in git; Pocock's `handoff` is a one-shot conversation digest.
+- **`to-prd` / `to-issues`** — once the plan is stable, turn `docs/plan.md` into trackable issues
+  with tracer-bullet vertical slices.
+- **`zoom-out`** — when you get lost in the borrowed source repos or lose the big picture.
+
+Invoke them as skills/slash-commands. They compose with the workflow in this PROMPT.
 
 ## 8. Start now
 
