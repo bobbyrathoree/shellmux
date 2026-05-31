@@ -63,6 +63,35 @@ a panel that sees through hype instantly. **Intellectual honesty is a feature, n
 
 ---
 
+## 2b. Build discipline (how to actually move — Pocock's techniques)
+
+These four rules keep both you and the human in control. They are not optional flavor; they
+are why the build stays fast and correct.
+
+- **Tracer bullets, not horizontal layers.** Build in *vertical slices* that pierce every layer
+  at once, never a whole layer at a time. M0 is your first tracer bullet — a thin end-to-end
+  path that proves the pipeline integrates. Then keep slicing vertically: each milestone should
+  produce something runnable that exercises the full flow on a narrow case, not a complete-but-
+  dead layer. Coding a whole subsystem before anything runs end-to-end is coding *blind* — you
+  won't know the layers integrate until the end, which is exactly when it's expensive to fix.
+- **Stay in the smart zone; reset like Memento.** An LLM's attention degrades as context grows —
+  past ~100k tokens you start making dumb decisions. Size each task to fit in one clean context.
+  When a task is done, **prefer clearing context to a clean base over endlessly compacting** — let
+  the next agent wake up fresh and reconstruct state from `HANDOFF.md` + `git log` (that is the
+  whole reason the handoff protocol in §5 exists). A fresh agent reading a crisp handoff beats a
+  bloated context every time. Update `HANDOFF.md` *before* you reset, not after.
+- **TDD without the cheat.** Red-green-refactor (use the `tdd` skill). Write the failing test
+  FIRST, run it, and confirm it fails *for the right reason* (missing module/behavior — not a
+  typo). Only then write code to go green. Models love to write the implementation and then a
+  test that just mirrors it — that proves nothing. A test that has never failed is not evidence.
+  The quality of your feedback loop sets the ceiling on your code quality.
+- **Deep modules.** Design units with a *small, simple interface* hiding *large, complex
+  functionality* — not shallow wrappers with sprawling dependencies. Deep modules let you wrap one
+  test boundary around a real unit, keep a high-level mental map of the system's shapes, and
+  delegate the messy internals as a gray box. Shallow, tightly-coupled modules are hard for both
+  of us to navigate and test. (See the `improve-codebase-architecture` skill for finding
+  deepening opportunities.)
+
 ## 3. Use dynamic workflows for anything non-trivial
 
 You have the **Workflow tool** (dynamic multi-agent orchestration). Reach for it whenever work
