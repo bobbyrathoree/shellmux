@@ -1,0 +1,13 @@
+# build artifacts
+/target/
+*.o
+*.rlib
+*.so
+*.log
+# evaluator runtime (regenerated each round)
+/eval/sessions/
+/eval/feedback/raw/*.json
+!/eval/feedback/raw/.gitkeep
+# editor / os
+.DS_Store
+node_modules/
