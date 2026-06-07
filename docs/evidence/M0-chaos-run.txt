@@ -1,0 +1,39 @@
+=== M0 FULL GATE: N=5000 ===
+============================================================
+ shellmux M0 — deadline scheduler chaos proof
+ bash 5.2.15(1)-release
+============================================================
+
+[1/5] CORRECT variant — the gate (N=5000, idle=10000ms, grace=1000ms)
+      src/sched.sh : publish lands in the [MIN,read] window every trial.
+      -> missed=0 dup=0 ontime=5000 total_fires=5000
+      PASS: missed=0 dup=0 over N=5000
+
+[2/5] NEGATIVE CONTROL: naivesleep (must MISS) — N=120
+      blind sleep ignores the wake -> fires only on the idle_poll floor.
+      -> missed=120 dup=0 ontime=0
+      PASS (control failed as required): missed=120 > 0
+
+[3/5] NEGATIVE CONTROL: drainfirst (must MISS) — N=120
+      drains the wake before blocking (honker's lost-wakeup ordering).
+      -> missed=120 dup=0 ontime=0
+      PASS (control failed as required): missed=120 > 0
+
+[4/5] NEGATIVE CONTROL: nocommit (must DUP) — N=60
+      fires in place with no mv commit point -> re-fires every rescan.
+      -> missed=0 dup=1770 ontime=60 total_fires=1830
+      PASS (control failed as required): dup=1770 > 0
+
+[5/5] IDLE CPU — correct scheduler, 5s idle sample
+      -> scheduler idle CPU = 0.00% (threshold 5.0%)
+      PASS: idle CPU 0.00% < 5.0%
+
+============================================================
+ M0 RESULT: PASS — missed=0 dup=0 over N=5000; all 3 controls
+            failed as required; idle CPU ~0.00%.
+============================================================
+
+real	2m45.103s
+user	0m9.549s
+sys	0m7.186s
+[M0 full gate exit: 0]
