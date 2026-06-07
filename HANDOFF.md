@@ -22,14 +22,19 @@ Next task: **M1** (crash-safe re-arm of the deferred scheduler) per `docs/plan.m
   - `docs/evidence/M0-chaos-run.txt` — the canonical N=5000 run output.
 
 ## In progress (exact state)
-- Adversarial-verification workflow running (PROMPT §3/§7.2): 4 skeptics each told to refute the
-  0/0 claim (lenses: correctness, negative-control, prior-art-fidelity, measurement-validity) +
-  synthesis judge. Run ID wf_f9f50b67-d54. Apply any confirmed must-fix findings before declaring
-  M0 fully closed; document honest limitations it surfaces in docs/prior-art.md.
+- Nothing mid-edit. M0 is closed and verified; tree is buildable & green.
+
+## Adversarial verification — DONE (PROMPT §3/§7.2): claim SURVIVES
+- 4 skeptic lenses (correctness, negative-control, prior-art-fidelity, measurement-validity) each
+  told to *refute* the 0/0 claim → **4/4 returned HOLDS at high confidence; none refuted.**
+- Two recurring "major" concerns probed independently and settled (docs/evidence/M0-adversarial-verdict.md):
+  (1) 0.00% idle CPU is real — scheduler sits in kernel `do_select` (state S), 0 ticks over 3s.
+  (2) tightening grace 1000ms→50ms still passes missed=0 → fires are wake-driven (ms), not poll-floor.
+- Limitations the skeptics surfaced, to carry forward (not blockers): re-measure latency on the Pi
+  at M5; crash-mid-`mv` at-most-once is M1's job to test; ms-vs-~1s resolution wording could be crisper.
 
 ## Next (ordered)
-1. Read the adversarial-verification verdict; apply confirmed must-fixes, document limitations.
-2. **M1** — crash-safe re-arm: on startup the scheduler rebuilds `next` purely from existing
+1. **M1** — crash-safe re-arm: on startup the scheduler rebuilds `next` purely from existing
    `deferred/` files. Test: stage files, kill sched.sh, restart, assert all fire (≤1 dup per file
    crashed mid-`mv`, matching documented at-most-once-modulo-crash). `tests/crash_recovery.sh`.
 3. **M2** — socat-fork acceptor + SUB handler + per-subscriber FIFO (UNIX + TCP).
