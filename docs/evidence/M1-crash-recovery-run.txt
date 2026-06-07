@@ -1,0 +1,6 @@
+== crash_recovery: src/sched.sh ==
+  ok   R1 deferred re-arm: both records fire after kill -9 + restart
+  ok   R2 outbox recovery: stranded outbox record re-fires on restart
+  ok   R2' control (must fail): no-recover variant loses the stranded outbox file
+  ok   R3 at-most-once: R3 fired 1 time(s) across one crash window (dup <= 1)
+== crash_recovery result: pass=4 fail=0 ==

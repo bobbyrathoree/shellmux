@@ -1,5 +1,5 @@
 # HANDOFF — shellmux
-Last updated: 2026-06-06 22:37 PDT   |   Last commit: (M0 commit, see git log)   |   Current milestone: **M0 PASSED** → next is M1
+Last updated: 2026-06-06 23:10 PDT   |   Last commit: (M1 commit, see git log)   |   Current milestone: **M0 + M1 PASSED** → next is M2
 
 ## If you are a new agent, START HERE
 M0 — the riskiest experiment, the project's whole reason to exist — is **GREEN**.
@@ -20,6 +20,14 @@ Next task: **M1** (crash-safe re-arm of the deferred scheduler) per `docs/plan.m
     EXACTLY one discipline violation (diff-able to one knob).
   - `tests/smoke.sh` — fast tracer-bullet smoke (T1 due-now fires, T2 fires near deadline, T3 fire-once).
   - `docs/evidence/M0-chaos-run.txt` — the canonical N=5000 run output.
+  - `docs/evidence/M0-adversarial-verdict.md` — 4/4 skeptic lenses HOLDS + 2 confirmation probes.
+- **M1 — deferred crash recovery: PASS.** (this session's M1 commit)
+  - `src/sched.sh` +startup outbox-recovery sweep: a record stranded in `outbox/` (crashed after the
+    `mv` commit point but before delivery+rm) is re-delivered on restart, then rm'd. Realizes
+    at-most-once-modulo-crash. Deferred re-arm needed no code (scan_min reads disk every iter).
+  - `tests/crash_recovery.sh` — R1 deferred re-arm across kill -9, R2 outbox recovery, R2' must-fail
+    no-recover control (LOSES the file), R3 at-most-once bound (dup<=1 per crash). All green.
+  - `docs/evidence/M1-crash-recovery-run.txt`. Verified NO M0 regression (chaos still 0/0).
 
 ## In progress (exact state)
 - Nothing mid-edit. M0 is closed and verified; tree is buildable & green.
@@ -34,13 +42,14 @@ Next task: **M1** (crash-safe re-arm of the deferred scheduler) per `docs/plan.m
   at M5; crash-mid-`mv` at-most-once is M1's job to test; ms-vs-~1s resolution wording could be crisper.
 
 ## Next (ordered)
-1. **M1** — crash-safe re-arm: on startup the scheduler rebuilds `next` purely from existing
-   `deferred/` files. Test: stage files, kill sched.sh, restart, assert all fire (≤1 dup per file
-   crashed mid-`mv`, matching documented at-most-once-modulo-crash). `tests/crash_recovery.sh`.
-3. **M2** — socat-fork acceptor + SUB handler + per-subscriber FIFO (UNIX + TCP).
-4. **M3** — length-prefixed fan-out + bounded ring drainer + drops_$pid.
-5. **M4** — death cleanup (`EXIT` trap unlink, `[ -p ]` skip, `pkill -P`) + introspection.
-6. **M5** — Pi demo + benchmarks.
+1. **M2** — socat-fork acceptor + SUB handler + per-subscriber FIFO (UNIX + TCP). The broker proper
+   begins here: `socat ... fork EXEC:handler` over UNIX + TCP; handler does `mkfifo sub_$$.fifo`,
+   `EXIT`-trap unlink, `exec 3>`, drainer start. Reuse terminalphone shape (terminalphone.sh:1206/
+   1350/1518-1546). Verify: subscriber connects → `ls sub_*.fifo` shows it; disconnect → FIFO gone.
+2. **M3** — length-prefixed fan-out + bounded ring drainer + drops_$pid (replace terminalphone's
+   `> $f &` leak with one long-lived drainer per sub). `tests/flood_wedged.sh`.
+3. **M4** — death cleanup (`EXIT` trap unlink, `[ -p ]` skip, `pkill -P`) + introspection.
+4. **M5** — Pi demo + benchmarks (re-measure latency on real hardware per the verification caveat).
 
 ## Decisions & rationale (so nobody relitigates them)
 - **Wake reader uses `read -N 1`, NOT line mode.** A poke is a single newline-less byte; a

@@ -107,6 +107,23 @@ fire_due() {
 
 mkdir -p "$DIR/outbox"
 
+# --- startup crash recovery (M1) --------------------------------------------
+# The single commit point is the `mv` of a record out of deferred/ into outbox/.
+# A crash *after* that mv but *before* delivery+rm leaves the record stranded in
+# outbox/. On startup we sweep outbox/ and re-deliver any survivor, then rm it.
+# This realizes at-most-once-modulo-crash: a record that crashed at the commit
+# boundary fires at most once more on restart (NOT honker's full claim_expires_at
+# lease — explicitly punted). Deferred re-arm needs no special code: scan_min
+# reads deferred/ from disk every iteration, so surviving pending files re-arm by
+# construction. SCHED_NO_RECOVER=1 skips this sweep (test-only negative control).
+if [ "${SCHED_NO_RECOVER:-0}" != "1" ]; then
+  for f in "$DIR"/outbox/*; do
+    [ -e "$f" ] || continue
+    now_ms; printf '%s %s\n' "$(cat "$f" 2>/dev/null)" "$REPLY" >> "$DIR/fires.log"
+    rm -f "$f"
+  done
+fi
+
 while [ "$running" = 1 ]; do
   next=$(scan_min)                                   # (2) next = MIN(run_at)
 
