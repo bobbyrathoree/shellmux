@@ -1,0 +1,13 @@
+============================================================
+ shellmux benchmarks (Linux container — NOT the Pi target)
+ Linux 6.12.76-linuxkit aarch64 | bash 5.2.15(1)-release | nproc=14
+============================================================
+B1 immediate: 2000 msgs -> 1 healthy sub(s): all got 2000/2000 in 1467ms = ~1363 msg/s/sub
+B1 immediate: 2000 msgs -> 3 healthy sub(s): all got 2000/2000 in 4152ms = ~481 msg/s/sub
+B2 idle: scheduler CPU over 3s = 0 ticks (~0%); broker direct children = 3
+B3 20 concurrent subscribers: 20 FIFOs, 110 total procs in container
+   (each sub = 1 socat + 1 handler + 1 drainer; the ceiling is fd/process limits)
+============================================================
+ NOTE: these are container numbers. On a $5 Pi expect lower
+ throughput and a lower subscriber ceiling — measure there for the slide.
+============================================================

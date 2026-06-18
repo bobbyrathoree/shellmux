@@ -1,0 +1,125 @@
+# shellmux — the 1-page demo
+
+A content-blind topic pub/sub broker built from `socat`-fork + FIFOs + `flock`.
+Two of the three things people pay clustered brokers for — per-subscriber
+isolation and forget-on-death — fall out of fork-per-connection **for free**.
+The one hard contribution, **proven live**, is a *data-derived deadline
+scheduler* that fires timed messages **race-free against concurrent publishes,
+with ~0% idle CPU and no timer wheel**, in a language with no threads, no
+atomics, and only advisory locks.
+
+## Setup (≈30s)
+
+```bash
+docker build -t shellmux-dev .
+docker run --rm -it -v "$PWD:/work" -w /work shellmux-dev bash
+```
+
+Everything below runs **inside that container** (Debian bookworm, bash 5.2,
+socat 1.7.4). The eventual target is a literal $5 Raspberry Pi — the real
+dependency set is **bash≥4 + coreutils + util-linux(`flock`) + socat**, not
+"zero deps".
+
+## Beat 1 — lead with the hard thing: the deadline chaos proof
+
+```bash
+bash tests/chaos_deadline.sh        # ~2m45s for the full N=5000 gate
+# quick:  N_MAIN=400 bash tests/chaos_deadline.sh
+```
+
+What the judge sees:
+
+```
+[1/5] CORRECT     missed=0 dup=0 ontime=5000 total_fires=5000   over N=5000   PASS
+[2/5] naivesleep  missed=120/120        control fails as required
+[3/5] drainfirst  missed=120/120        control fails as required
+[4/5] nocommit    dup=1770              control fails as required
+[5/5] idle CPU    0.00%                 PASS
+```
+
+Every one of 5000 trials lands a publish in the **exact** window between
+"scheduler computed `next = MIN(run_at)`" and "scheduler entered the blocking
+`read -t`" — the precise race that a naive `sleep $((next-now))` loses. shellmux
+fires **0 missed, 0 duplicate**, at **0.00% idle CPU**. The proof is only a proof
+because three deliberately-broken schedulers (each one knob off `src/sched.sh`)
+are shown to **fail** on their predicted axis. This survived an adversarial
+4-lens verification (`docs/evidence/M0-adversarial-verdict.md`).
+
+## Beat 2 — the scheduler fires a real publish, on the second, at ~0% CPU
+
+```bash
+D=$(mktemp -d); SOCK=$D/s.sock
+bash src/shellmux serve "$D" --unix "$SOCK" &        # no config
+bash src/shellmux sub  "$D" control --unix "$SOCK" & # a subscriber
+echo reboot-now | bash src/shellmux pub "$D" control --delay 5 --unix "$SOCK"
+# top shows ~0% the whole 5s; the line lands on the second.
+ls "$D"/deferred/      # the pending deadline, as a filename: <run_at_ms>.<seq>
+```
+
+`tests/deferred_pub.sh` proves this: `--delay`/`--at` fire **at** the deadline
+(~40ms, wake-driven — not early, not poll-late), with the scheduler idle
+(0 CPU ticks) during the wait.
+
+## Beat 3 — the backpressure path, honestly
+
+```bash
+bash tests/flood_wedged.sh           # ~5s
+```
+
+Three subscribers on a topic, one deliberately **wedged** (never reads its
+socket); flood the topic. The two healthy subscribers get the **entire** flood
+at full speed; `cat drops_<wedged>` ticks up (lossy, but **visible — never
+silent**); and the publisher's process count stays **flat (~15)**. The must-fail
+control flips one knob to terminalphone's `printf > $f &` pattern and the count
+**balloons to ~1300** — the leak we replaced, made visible.
+
+## Beat 4 — the whole broker is `ls` and `cat`
+
+```bash
+ls "$D"/topics/                          # topics are directories
+ls "$D"/topics/control/sub_*.fifo | wc -l   # live subscriber count
+cat "$D"/topics/control/drops_*             # per-subscriber drops
+ls "$D"/deferred/ | sort | head -1          # the next deadline
+```
+
+No admin protocol. State *is* the filesystem (`tests/introspection.sh`).
+
+## Run everything
+
+```bash
+bash tests/run_all.sh                # all 7 suites, each with its must-fail control
+N_MAIN=400 bash tests/run_all.sh     # fast (~90s)
+bash tests/bench.sh                  # throughput + footprint
+```
+
+## Measured numbers (container — the Pi will be slower; measure there for a slide)
+
+```
+Linux aarch64, bash 5.2, nproc=14
+B1  immediate publish:  1 sub  ~1360 msg/s ;  3 subs ~480 msg/s/sub (~1440 aggregate)
+B2  idle scheduler:     0 CPU ticks over 3s (~0%)
+B3  20 subscribers:     20 FIFOs, ~110 procs (ceiling = fd/process limits)
+```
+
+## Why it's honest (the things we do NOT claim)
+
+- **Not lossless.** Backpressure is best-effort; the ring is lossy under
+  sustained overload *for that one wedged subscriber only*, exposed via
+  `drops_$pid`. "Make the bad state impossible" is claimed **only** for the
+  stranded-FIFO case (a write to a vanished pipe is a harmless ENOENT/ENXIO).
+- **Not fork-free.** Each bounded write is a `timeout bash -c` (~0.5–10ms here);
+  the claim is *no per-message process **accumulation*** — proven by the flat
+  process count, not "zero forks".
+- **Not POSIX-anywhere.** Needs bash≥4, `flock`, `timeout`, `socat`; sub-second
+  timers need bash≥4 fractional `read -t` (whole-second floor on bash3/dash —
+  faithful to honker's own `Duration::from_secs`).
+- **Not a serious broker.** No persistence, acks, wildcards, auth/TLS (delegate
+  to `socat OPENSSL`/SSH), or clustering. At-most-once-modulo-crash, by design.
+- **Line count:** `src/sched.sh` is 167 lines; `src/shellmux` is 374 (fan-out +
+  bounded drainer + deferred PUB + client helpers + reaper). The "~150 lines"
+  pitch is the *scheduler*, which is the contribution; the broker around it is
+  honest plumbing.
+
+The brag is small and correct: a race-free, data-derived deadline scheduler in
+shell, proven by 5000 adversarial trials with a must-fail negative control — on
+hardware cheaper than lunch.
