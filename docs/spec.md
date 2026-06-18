@@ -74,6 +74,17 @@ We default to (1) and benchmark both on a real Pi.
 
 **Build sequence:** (1) deadline scheduler + chaos test FIRST (the hard, provable core); (2) socat-fork acceptor + SUB handler + ring drainer; (3) length-prefixed fan-out + drop counter; (4) `EXIT`-trap + `[ -p ]` death path; (5) deferred crash recovery + topic GC reaper; (6) demo + benchmarks on the Pi.
 
+**As-built note (honesty reconciliation, post-implementation).** The "~150 lines / one screen"
+figure is the size of the *contribution* — `src/sched.sh` is **167 lines**. The full broker
+`src/shellmux` (acceptor + SUB/PUB + bounded-drainer fan-out + deferred-PUB wiring + client helpers +
+GC reaper) is **374 lines**. The pitch should say "the scheduler is one screen", not "the whole
+broker". The wedged-flood beat is as-built true: healthy subscribers receive the full flood while a
+wedged peer's `drops_$pid` ticks up and `ps --ppid $PUB` stays flat (~15 vs a leaky control's ~1300).
+The bounded write is **not fork-free** (each is a `timeout bash -c`, ~0.5–10ms on the dev host); the
+proven claim is *no per-message process accumulation*, not "zero forks". Backpressure remains lossy
+and best-effort, exposed via `drops_$pid` — never silent, never claimed lossless. All other spec
+claims held as written.
+
 ## The Demo
 
 On a literal $5 Raspberry Pi (bash, coreutils, util-linux, socat — the *real* dep set, stated on the slide), start `shellmux`, no config. **Lead with the hard thing:** run the deadline chaos test live — a tight loop firing publishes into the exact window between deadline-computation and the blocking wait; a counter prints `missed=0 dup=0` after 5000 trials while `top` shows ~0% CPU. Then `shellmux pub control --delay 5 'reboot-now'`; with `top` at 0% the whole 5 s, it lands on the second. **Then the backpressure path, honestly:** three subscribers on `sensors`, one deliberately wedged (`socat … | (read x; sleep 999)`); flood it. The two healthy subscribers stay real-time, `cat drops_<wedged>` ticks up, **and a live `watch 'ps --ppid $PUB | wc -l'` stays flat** — proving background writers do NOT accumulate (the bug the old `> $f &` pattern would show). `kill -9` the wedged one: `ls sub_*.fifo` shows it gone, publisher never hiccups. Close with `wc -l shellmux` — one screen.
