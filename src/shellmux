@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+# shellmux — a content-blind topic pub/sub broker in ~150 lines of shell.
+#
+# Built from socat-fork + FIFOs + flock. Two of the three things people pay
+# clustered brokers for — per-subscriber isolation and forget-on-death — fall
+# out of fork-per-connection for free. The one hard contribution is the
+# data-derived deadline scheduler (src/sched.sh, proven by tests/chaos_deadline.sh).
+#
+# Borrowed relay shape (verified against the cloned tree):
+#   socat-fork acceptor      terminalphone.sh:1206/1350  (we use EXEC: + ,fork)
+#   per-client FIFO + drainer terminalphone.sh:1518-1546
+#   [ -p ]-guarded fan-out    terminalphone.sh:1567-1572
+#   pkill -P cleanup          terminalphone.sh:1674
+# We REPLACE terminalphone's `printf ... > $f &` blocking-write-backgrounded
+# leak (terminalphone.sh:1570) — see M3 bounded ring drainer.
+#
+# Usage:
+#   shellmux serve <dir> [--unix <path>] [--tcp <port>]   start the broker
+#   shellmux sub   <dir> <topic> [--unix <path>|--tcp <port>]   subscribe (prints msgs)
+#   shellmux pub   <dir> <topic> [--unix ...|--tcp ...]         publish (stdin = payload lines)
+#   shellmux _handle <dir>                                internal: socat-forked handler
+#
+# All state is the filesystem under <dir>: topics/<t>/sub_<pid>.fifo, deferred/,
+# outbox/, wake.fifo. Introspect with ls/cat. No auth, no admin protocol.
+set -uo pipefail
+
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+SCHED="$(dirname "$SELF")/sched.sh"
+
+die() { printf 'shellmux: %s\n' "$*" >&2; exit 1; }
+
+# ---------------------------------------------------------------------------
+# _handle <dir>  — runs once per connection (socket on stdin/stdout via socat).
+#   Reads ONE control line. SUB <topic>: register a mailbox FIFO, drain it to
+#   the socket, hold it open, block until the client disconnects (stdin EOF),
+#   then the EXIT trap unlinks the FIFO (forget-on-death). PUB <topic> [opts]:
+#   stream records into the topic's fan-out (M3) / deferred scheduler.
+# ---------------------------------------------------------------------------
+_handle() {
+  local dir="$1"
+  local ctl; IFS= read -r ctl || exit 0
+  local verb="${ctl%% *}" rest="${ctl#* }"
+  case "$verb" in
+    SUB)
+      local topic="$rest" td
+      [ -n "$topic" ] && [ "$topic" != "SUB" ] || exit 0
+      td="$dir/topics/$topic"; mkdir -p "$td"
+      # INFIFO is intentionally NOT `local`: the EXIT trap runs in the top-level
+      # script scope where a function-local would be out of scope (and under
+      # `set -u` that aborts the trap before the rm — forget-on-death would
+      # silently never fire). A handler process serves exactly one connection,
+      # so a script-global is correct here.
+      INFIFO="$td/sub_$$.fifo"
+      mkfifo "$INFIFO" 2>/dev/null || exit 1
+      # forget-on-death: unlink the mailbox when this handler dies (disconnect,
+      # signal, crash). The shell analog of honker's Disconnected => false prune
+      # (honker-core/src/lib.rs:957-960). SHELLMUX_NO_TRAP=1 skips it (test control).
+      [ "${SHELLMUX_NO_TRAP:-0}" = "1" ] || trap 'rm -f "$INFIFO"' EXIT
+      # drainer: the ONLY writer to the socket. Reads mailbox frames, writes
+      # stdout. (M3 makes this a bounded ring; for now a plain pump.)
+      ( while IFS= read -r m; do printf '%s\n' "$m"; done < "$INFIFO" ) &
+      # keepalive: hold the FIFO open for writing so the drainer never sees EOF
+      # as publishers come and go (terminalphone.sh:1546).
+      exec 3>"$INFIFO"
+      # block until the client disconnects (socket EOF on stdin); then fall off
+      # the end and the EXIT trap fires.
+      while IFS= read -r _; do :; done
+      ;;
+    PUB)
+      # M3: parse "PUB <topic> [--at <epoch>|--delay <s>]", stream records.
+      # Stubbed until M3 fan-out lands so `serve` is exercisable now.
+      exit 0
+      ;;
+    *)
+      exit 0 ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# serve <dir> [--unix <path>] [--tcp <port>]
+#   Start the scheduler + a socat fork-EXEC acceptor per requested transport.
+#   Each connection forks a fresh `_handle` with the socket on stdin/stdout.
+# ---------------------------------------------------------------------------
+serve() {
+  local dir="$1"; shift
+  local unix_path="" tcp_port=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --unix) unix_path="$2"; shift 2 ;;
+      --tcp)  tcp_port="$2";  shift 2 ;;
+      *) die "serve: unknown arg $1" ;;
+    esac
+  done
+  [ -n "$unix_path" ] || [ -n "$tcp_port" ] || die "serve: need --unix and/or --tcp"
+
+  mkdir -p "$dir/topics" "$dir/deferred" "$dir/outbox"
+  [ -p "$dir/wake.fifo" ] || mkfifo "$dir/wake.fifo"
+
+  # The scheduler fires deferred records into the fan-out path (M0/M1).
+  env SCHED_IDLE_POLL_MS="${SCHED_IDLE_POLL_MS:-1000}" bash "$SCHED" "$dir" &
+  local sched_pid=$!
+
+  local pids=("$sched_pid")
+  # socat EXEC: execvp's the first token directly (NO shell), so an env-var
+  # prefix would be taken as the program name. Instead export the test escape
+  # hatch into socat's environment; socat propagates it to the forked handler.
+  export SHELLMUX_NO_TRAP="${SHELLMUX_NO_TRAP:-0}"
+  local exec_cmd="bash $SELF _handle $dir"
+
+  if [ -n "$unix_path" ]; then
+    rm -f "$unix_path"
+    socat "UNIX-LISTEN:$unix_path,fork" "EXEC:$exec_cmd" &
+    pids+=($!)
+  fi
+  if [ -n "$tcp_port" ]; then
+    socat "TCP-LISTEN:$tcp_port,reuseaddr,fork" "EXEC:$exec_cmd" &
+    pids+=($!)
+  fi
+
+  # Broker shutdown = fail-loud-for-all: reap the scheduler and every forked
+  # handler so subscribers get EOF and reconnect (honker WatcherDeathGuard::drop,
+  # honker-core/src/lib.rs:908-916; pkill -P shape terminalphone.sh:1674).
+  shutdown() { local p; for p in "${pids[@]}"; do pkill -P "$p" 2>/dev/null; kill "$p" 2>/dev/null; done; exit 0; }
+  trap shutdown TERM INT
+  wait
+}
+
+# ---------------------------------------------------------------------------
+# client helpers — sub/pub just connect a socat to the broker and speak the
+# one-line control protocol. <dir> is accepted for symmetry but unused client-side.
+# ---------------------------------------------------------------------------
+_endpoint() { # echoes the socat address from --unix/--tcp args
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --unix) printf 'UNIX-CONNECT:%s' "$2"; return ;;
+      --tcp)  printf 'TCP-CONNECT:127.0.0.1:%s' "$2"; return ;;
+    esac
+    shift
+  done
+  die "need --unix <path> or --tcp <port>"
+}
+
+sub() {
+  local dir="$1" topic="$2"; shift 2
+  local ep; ep="$(_endpoint "$@")" || exit 1
+  { printf 'SUB %s\n' "$topic"; cat >/dev/null; } | socat - "$ep"
+}
+
+pub() {
+  local dir="$1" topic="$2"; shift 2
+  # collect --at/--delay (M3); pass remaining as the control line
+  local opts="" ep_args=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --at|--delay) opts="$opts $1 $2"; shift 2 ;;
+      --unix|--tcp) ep_args+=("$1" "$2"); shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  local ep; ep="$(_endpoint "${ep_args[@]}")" || exit 1
+  { printf 'PUB %s%s\n' "$topic" "$opts"; cat; } | socat - "$ep"
+}
+
+# ---------------------------------------------------------------------------
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  serve)   serve "$@" ;;
+  sub)     sub "$@" ;;
+  pub)     pub "$@" ;;
+  _handle) _handle "$@" ;;
+  *) die "usage: shellmux {serve|sub|pub} ... (got '${cmd:-}')" ;;
+esac

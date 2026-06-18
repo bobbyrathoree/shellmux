@@ -1,15 +1,18 @@
 # HANDOFF — shellmux
-Last updated: 2026-06-06 23:10 PDT   |   Last commit: (M1 commit, see git log)   |   Current milestone: **M0 + M1 PASSED** → next is M2
+Last updated: 2026-06-07 04:20 UTC   |   Last commit: (M2 commit, see git log)   |   Current milestone: **M0 + M1 + M2 PASSED** → next is M3
 
 ## If you are a new agent, START HERE
 M0 — the riskiest experiment, the project's whole reason to exist — is **GREEN**.
 `tests/chaos_deadline.sh` fires **0 missed / 0 duplicate over N=5000** adversarial-timing trials
 (publish injected into the exact `[next=MIN → blocking read]` window every trial), at **0.00% idle
 CPU**, and all **three must-fail negative controls fail on their predicted axis**. Evidence:
-`docs/evidence/M0-chaos-run.txt`. To reproduce: build the container (`docker build -t shellmux-dev .`)
-then `docker run --rm -v "$PWD:/work" -w /work shellmux-dev bash tests/chaos_deadline.sh`
-(~2m45s for N=5000; use `-e N_MAIN=200 -e N_NEG=40 -e N_DUP=20` for a ~15s smoke).
-Next task: **M1** (crash-safe re-arm of the deferred scheduler) per `docs/plan.md`, then M2 (acceptor).
+`docs/evidence/M0-chaos-run.txt`. M1 (crash recovery) and M2 (socat-fork acceptor + SUB handler +
+per-subscriber FIFO + forget-on-death over UNIX **and** TCP) are also GREEN.
+To reproduce: build the container (`docker build -t shellmux-dev .`) then run any test, e.g.
+`docker run --rm -v "$PWD:/work" -w /work shellmux-dev bash tests/sub_lifecycle.sh`
+(chaos N=5000 is ~2m45s; use `-e N_MAIN=200 -e N_NEG=40 -e N_DUP=20` for a ~15s smoke).
+Next task: **M3** — length-prefixed fan-out + bounded ring drainer + drops_$pid, per `docs/plan.md`.
+This is where PUB actually delivers to subscribers (the PUB verb in `src/shellmux` is currently a stub).
 
 ## Done (with commit shas)
 - Repo scaffolded (commit aeb9198 + e871e52 + e602872).
@@ -28,9 +31,18 @@ Next task: **M1** (crash-safe re-arm of the deferred scheduler) per `docs/plan.m
   - `tests/crash_recovery.sh` — R1 deferred re-arm across kill -9, R2 outbox recovery, R2' must-fail
     no-recover control (LOSES the file), R3 at-most-once bound (dup<=1 per crash). All green.
   - `docs/evidence/M1-crash-recovery-run.txt`. Verified NO M0 regression (chaos still 0/0).
+- **M2 — acceptor + SUB handler + per-subscriber FIFO: PASS.** (this session's M2 commit)
+  - `src/shellmux` (172 lines): subcommand dispatch — `serve <dir> [--unix P] [--tcp PORT]` starts
+    the scheduler + a `socat ... ,fork EXEC:'bash <self> _handle <dir>'` acceptor per transport;
+    `_handle` reads one control line, on `SUB <topic>` does mkdir+mkfifo sub_$$.fifo, EXIT-trap
+    unlink, drainer (pumps FIFO→socket), `exec 3>` keepalive, blocks until stdin EOF. `sub`/`pub`
+    client helpers connect via socat. PUB verb is a STUB until M3.
+  - `tests/sub_lifecycle.sh`: S1 SUB/UNIX registers FIFO, S2 disconnect unlinks (forget-on-death),
+    S3 concurrent isolation, S4 SUB/TCP, S2' must-fail no-trap control strands the FIFO. All green.
+  - `docs/evidence/M2-sub-lifecycle-run.txt`. NO M0/M1 regression (smoke 3/3, crash 4/4, chaos 0/0).
 
 ## In progress (exact state)
-- Nothing mid-edit. M0 is closed and verified; tree is buildable & green.
+- Nothing mid-edit. M0/M1/M2 closed; tree is buildable & green.
 
 ## Adversarial verification — DONE (PROMPT §3/§7.2): claim SURVIVES
 - 4 skeptic lenses (correctness, negative-control, prior-art-fidelity, measurement-validity) each
@@ -42,13 +54,17 @@ Next task: **M1** (crash-safe re-arm of the deferred scheduler) per `docs/plan.m
   at M5; crash-mid-`mv` at-most-once is M1's job to test; ms-vs-~1s resolution wording could be crisper.
 
 ## Next (ordered)
-1. **M2** — socat-fork acceptor + SUB handler + per-subscriber FIFO (UNIX + TCP). The broker proper
-   begins here: `socat ... fork EXEC:handler` over UNIX + TCP; handler does `mkfifo sub_$$.fifo`,
-   `EXIT`-trap unlink, `exec 3>`, drainer start. Reuse terminalphone shape (terminalphone.sh:1206/
-   1350/1518-1546). Verify: subscriber connects → `ls sub_*.fifo` shows it; disconnect → FIFO gone.
-2. **M3** — length-prefixed fan-out + bounded ring drainer + drops_$pid (replace terminalphone's
-   `> $f &` leak with one long-lived drainer per sub). `tests/flood_wedged.sh`.
-3. **M4** — death cleanup (`EXIT` trap unlink, `[ -p ]` skip, `pkill -P`) + introspection.
+1. **M3** — length-prefixed fan-out + bounded ring drainer + drops_$pid. PUB delivers to subscribers
+   (the PUB verb in `src/shellmux` is a stub). Publisher writes each sub's FIFO (never the socket);
+   ONE long-lived drainer per sub owns the last-N ring + writes the socket + bumps drops_$pid on
+   overflow — REPLACING terminalphone's `> $f &` leak (terminalphone.sh:1570). Records are
+   length-prefixed (`<decimal-len>\n<bytes>`) so a torn write is caught by short-read.
+   `tests/flood_wedged.sh`: 3 subs, 1 wedged; flood; assert healthy subs real-time, drops_<wedged>
+   rises, and `ps --ppid $PUB | wc -l` stays FLAT (the refutation of the `> $f &` leak).
+2. **M3b** — `--at`/`--delay` deferred PUB wired through the M0 scheduler (stage-then-poke from the
+   PUB path; scheduler fires into the same fan-out). Small once fan-out exists.
+3. **M4** — death cleanup (`EXIT` trap unlink ✓ done in M2, `[ -p ]` skip in fan-out, `pkill -P`
+   broker shutdown ✓ done) + full ls/cat introspection. Mostly lands with M3.
 4. **M5** — Pi demo + benchmarks (re-measure latency on real hardware per the verification caveat).
 
 ## Decisions & rationale (so nobody relitigates them)
@@ -78,6 +94,15 @@ Next task: **M1** (crash-safe re-arm of the deferred scheduler) per `docs/plan.m
   violated discipline point. This is the must-fail-control discipline made auditable.
 - **Container is the only dev/test surface.** Host is darwin/arm64 bash 3.2 (no fractional read -t,
   no flock/socat). All runs are `docker run ... shellmux-dev`.
+- **(M2) socat `EXEC:` execvp's the first token directly — NO shell.** An env-var prefix
+  (`VAR=val bash ...`) is taken as the *program name* and fails `execvp` with ENOENT. Pass config to
+  forked handlers by `export`-ing into socat's environment (socat propagates it), not as a command
+  prefix. Use `,fork` for one handler process per connection.
+- **(M2) The handler's `INFIFO` is a script-global, NOT `local`.** The `EXIT` trap runs in top-level
+  scope; a function-local is out of scope there and under `set -u` the trap aborts before the `rm`,
+  so forget-on-death would silently never fire. A handler process serves exactly one connection, so
+  a global is correct. (Verified: the bug manifested as `line 1: INFIFO: unbound variable` + a
+  stranded FIFO that the no-trap control couldn't be distinguished from.)
 
 ## Dead ends (don't retry — and why)
 - `pid="$(start_sched)"` where the backgrounded sched inherits the command-substitution stdout pipe

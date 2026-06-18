@@ -1,0 +1,7 @@
+== sub_lifecycle: src/shellmux ==
+  ok   S1 SUB over UNIX registers topics/weather/sub_*.fifo
+  ok   S2 disconnect unlinks the FIFO (forget-on-death)
+  ok   S3 two subs isolated; killing one leaves the other's FIFO
+  ok   S4 SUB over TCP registers a FIFO
+  ok   S2' control (must strand): no-trap handler leaves the FIFO after disconnect
+== sub_lifecycle result: pass=5 fail=0 ==
