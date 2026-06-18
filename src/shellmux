@@ -211,6 +211,35 @@ _fire() {
 }
 
 # ---------------------------------------------------------------------------
+# _reap <dir>  — one GC sweep over broker state. Removes:
+#   - a drops_<pid> whose sub_<pid>.fifo no longer exists (the subscriber died;
+#     its forget-on-death EXIT trap unlinks the FIFO but not the counter file);
+#   - orphaned deferred/ files older than SHELLMUX_DEFERRED_TTL seconds (default
+#     86400) — a safety net for records whose delivery was abandoned;
+#   - empty topic directories.
+# It NEVER touches a live subscriber's FIFO, a live drops file, or a non-empty
+# topic. Idempotent; safe to run on any timer. (serve runs it on a slow loop.)
+_reap() {
+  local dir="$1" td t b pid f ttl now
+  ttl="${SHELLMUX_DEFERRED_TTL:-86400}"
+  for td in "$dir"/topics/*/; do
+    [ -d "$td" ] || continue
+    # stale drops_<pid>: no matching sub_<pid>.fifo
+    for f in "$td"drops_*; do
+      [ -e "$f" ] || continue
+      b=${f##*/}; pid=${b#drops_}
+      [ -p "${td}sub_${pid}.fifo" ] || rm -f "$f"
+    done
+    # empty topic dir (no entries at all)
+    rmdir "$td" 2>/dev/null || true
+  done
+  # orphaned deferred files older than the TTL (find -mmin in minutes)
+  if [ -d "$dir/deferred" ]; then
+    find "$dir/deferred" -type f -mmin "+$(( ttl / 60 ))" -delete 2>/dev/null || true
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # serve <dir> [--unix <path>] [--tcp <port>]
 #   Start the scheduler + a socat fork-EXEC acceptor per requested transport.
 #   Each connection forks a fresh `_handle` with the socket on stdin/stdout.
@@ -248,7 +277,13 @@ serve() {
     SCHED_IDLE_POLL_MS="${SCHED_IDLE_POLL_MS:-1000}" bash "$sched_script" "$dir" &
   local sched_pid=$!
 
-  local pids=("$sched_pid")
+  # Slow GC reaper: one sweep every SHELLMUX_REAP_INTERVAL seconds (default 30).
+  # It mostly sleeps, so idle CPU stays ~0; it only forks `find`+`rm` occasionally.
+  local reap_interval="${SHELLMUX_REAP_INTERVAL:-30}"
+  ( while sleep "$reap_interval"; do _reap "$dir"; done ) &
+  local reap_pid=$!
+
+  local pids=("$sched_pid" "$reap_pid")
   local exec_cmd="bash $SELF _handle $dir"
 
   if [ -n "$unix_path" ]; then
@@ -334,5 +369,6 @@ case "$cmd" in
   pub)     pub "$@" ;;
   _handle) _handle "$@" ;;
   _fire)   _fire "$@" ;;
+  _reap)   _reap "$@" ;;
   *) die "usage: shellmux {serve|sub|pub} ... (got '${cmd:-}')" ;;
 esac

@@ -1,0 +1,9 @@
+== introspection: src/shellmux ==
+  ok   I1 topics are directories (ls topics/ shows 'weather')
+  ok   I2 live subscriber count via ls sub_*.fifo = 1
+  ok   I3 drops_<pid> is a plain cat-able counter (=7)
+  ok   I4 deferred queue visible via ls (pending=1, next=1781790181240.2197016928)
+  ok   I5' precondition: stale drops_999999 and empty topic exist before reap
+  ok   I5 reaper removed the stale drops file AND the empty topic dir
+  ok   I5 reaper PRESERVED live state (live drops, live FIFO, non-empty topic)
+== introspection result: pass=7 fail=0 ==
