@@ -30,6 +30,59 @@ SCHED="$(dirname "$SELF")/sched.sh"
 die() { printf 'shellmux: %s\n' "$*" >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
+# fanout <record> <topic_dir>  — deliver one record to every live subscriber.
+#   The publisher writes each subscriber's FIFO (NEVER the socket). Boundedness
+#   comes from the kernel pipe buffer (~64KiB on Linux) used AS a ring: a healthy
+#   subscriber's FIFO is drained, so the write is ~microseconds; a wedged
+#   subscriber's FIFO fills to the buffer limit, the timeout-bounded write is
+#   killed depositing zero bytes, and we drop + bump a visible drops_<pid>.
+#   Crucially there is NO `&` — exactly ONE serial, timeout-bounded write per
+#   subscriber per record — so the publisher never accumulates processes. This
+#   replaces terminalphone's `printf ... > $f &` leak (terminalphone.sh:1570),
+#   which spawns one stuck process per message to a wedged peer.
+#   Records are length-prefixed on the wire to the FIFO (`<decimal-len>\n<bytes>`)
+#   so a torn write is caught by the drainer's short-read and discarded.
+#   Honest: this is NOT fork-free (each write is a ~675us `timeout bash -c`); the
+#   claim is "no per-message process ACCUMULATION", which is what keeps ps flat.
+fanout() {
+  local rec="$1" td="$2" f pid frame
+  # Write timeout: a healthy (drained) sub's write completes in microseconds, so
+  # even a small timeout has a huge safety margin (measured: 500/500 healthy
+  # writes succeed at a 5ms timeout). A wedged sub's write is abandoned after
+  # ~this long, so a wedged peer slows the publisher by at most WRITE_TIMEOUT per
+  # dropped record — bounded and small — instead of stalling it. Tunable; the
+  # default trades a little wedged-abandon latency for robustness on slow hardware.
+  local wto="${SHELLMUX_WRITE_TIMEOUT:-0.05}"
+  frame="${#rec}"$'\n'"$rec"
+  for f in "$td"/sub_*.fifo; do
+    [ -e "$f" ] || continue                  # glob-no-match guard
+    [ "$f" = "${INFIFO:-}" ] && continue      # skip self (no-op in PUB handler)
+    [ -p "$f" ] || continue                   # skip non-pipes (dead/forgotten subs)
+    if [ "${SHELLMUX_LEAKY_WRITE:-0}" = "1" ]; then
+      # NEGATIVE CONTROL ONLY (tests/flood_wedged.sh F3'): the bug we replace.
+      # A blocking write backgrounded with & -> one stuck process PER message to
+      # a wedged sub. The test asserts this BALLOONS. Never used in production.
+      printf '%s' "$frame" > "$f" 2>/dev/null &
+    else
+      # PRODUCTION: one serial, timeout-bounded write. The open AND write live
+      # inside the timeout-governed bash -c, so even a blocking open (sub died in
+      # a race, FIFO present but no reader) is bounded — not just the write.
+      pid="${f##*/sub_}"; pid="${pid%.fifo}"
+      if ! timeout "$wto" bash -c 'printf "%s" "$2" > "$1"' _ "$f" "$frame" 2>/dev/null; then
+        # serialize the read-modify-write so concurrent publishers to the same
+        # wedged sub don't lose increments (flock'd-counter shape,
+        # terminalphone.sh:1585-1590). `local` is invalid in a ( ) subshell, so v
+        # is a plain assignment scoped to the subshell.
+        ( flock 9
+          v=$(cat "$td/drops_$pid" 2>/dev/null)
+          printf '%d\n' $(( ${v:-0} + 1 )) > "$td/drops_$pid"
+        ) 9>"$td/.drops.lock"
+      fi
+    fi
+  done
+}
+
+# ---------------------------------------------------------------------------
 # _handle <dir>  — runs once per connection (socket on stdin/stdout via socat).
 #   Reads ONE control line. SUB <topic>: register a mailbox FIFO, drain it to
 #   the socket, hold it open, block until the client disconnects (stdin EOF),
@@ -56,9 +109,35 @@ _handle() {
       # signal, crash). The shell analog of honker's Disconnected => false prune
       # (honker-core/src/lib.rs:957-960). SHELLMUX_NO_TRAP=1 skips it (test control).
       [ "${SHELLMUX_NO_TRAP:-0}" = "1" ] || trap 'rm -f "$INFIFO"' EXIT
-      # drainer: the ONLY writer to the socket. Reads mailbox frames, writes
-      # stdout. (M3 makes this a bounded ring; for now a plain pump.)
-      ( while IFS= read -r m; do printf '%s\n' "$m"; done < "$INFIFO" ) &
+      local pid="$$" wto="${SHELLMUX_WRITE_TIMEOUT:-0.05}"
+      # drainer: the ONLY writer to the socket (stdout) and the OWNER of
+      # backpressure. It reads length-prefixed frames from its FIFO and does a
+      # BOUNDED write of each payload to the socket; if that write times out (the
+      # client is wedged — not reading its socket) the frame is DROPPED and
+      # drops_<pid> is bumped. Because the drainer keeps reading the FIFO at full
+      # speed and drops on a slow socket, the FIFO stays drained, so a wedged
+      # subscriber NEVER backs up to the publisher — healthy subscribers are fully
+      # decoupled from a wedged peer. This is the corrected backpressure unit:
+      # exactly ONE long-lived drainer per subscriber, no per-message process.
+      #
+      # Torn-frame defense (three layers): (1) a non-numeric/empty length line is
+      # junk -> skip, resyncing on the next prefix; (2) strict length match
+      # discards a short (torn) read instead of concatenating it; (3) the bounded
+      # payload read (-t 0.5) prevents a stall mid-payload from wedging the drainer.
+      # A payload-read timeout is a torn-frame discard, NOT a drop (drops are a
+      # socket-write-timeout property), so an idle healthy sub never false-drops.
+      ( exec 9>"$td/.drops.lock"
+        while IFS= read -r len; do
+          case "$len" in *[!0-9]*|'') continue ;; esac
+          IFS= read -r -N "$len" -t 0.5 payload || continue
+          [ "${#payload}" -eq "$len" ] || continue
+          if ! timeout "$wto" bash -c 'printf "%s\n" "$1"' _ "$payload" 2>/dev/null; then
+            flock 9
+            v=$(cat "$td/drops_$pid" 2>/dev/null)
+            printf '%d\n' $(( ${v:-0} + 1 )) > "$td/drops_$pid"
+            flock -u 9
+          fi
+        done < "$INFIFO" ) &
       # keepalive: hold the FIFO open for writing so the drainer never sees EOF
       # as publishers come and go (terminalphone.sh:1546).
       exec 3>"$INFIFO"
@@ -67,8 +146,25 @@ _handle() {
       while IFS= read -r _; do :; done
       ;;
     PUB)
-      # M3: parse "PUB <topic> [--at <epoch>|--delay <s>]", stream records.
-      # Stubbed until M3 fan-out lands so `serve` is exercisable now.
+      # "PUB <topic> [--at <epoch>|--delay <s>]" then stream records (one per
+      # line) on stdin. The broker parses ONLY this control line, never payloads.
+      local topic="" at="" delay="" tok
+      set -- $rest
+      topic="${1:-}"; shift || true
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --at)    at="$2"; shift 2 ;;
+          --delay) delay="$2"; shift 2 ;;
+          *) shift ;;
+        esac
+      done
+      [ -n "$topic" ] || exit 0
+      local td="$dir/topics/$topic"; mkdir -p "$td"
+      # immediate publish: fan out each record now. Deferred publish (--at/--delay)
+      # is wired through the M0 scheduler in M3b.
+      while IFS= read -r rec; do
+        fanout "$rec" "$td"
+      done
       exit 0
       ;;
     *)
@@ -105,6 +201,8 @@ serve() {
   # prefix would be taken as the program name. Instead export the test escape
   # hatch into socat's environment; socat propagates it to the forked handler.
   export SHELLMUX_NO_TRAP="${SHELLMUX_NO_TRAP:-0}"
+  export SHELLMUX_LEAKY_WRITE="${SHELLMUX_LEAKY_WRITE:-0}"
+  export SHELLMUX_WRITE_TIMEOUT="${SHELLMUX_WRITE_TIMEOUT:-0.05}"
   local exec_cmd="bash $SELF _handle $dir"
 
   if [ -n "$unix_path" ]; then
@@ -143,7 +241,20 @@ _endpoint() { # echoes the socat address from --unix/--tcp args
 sub() {
   local dir="$1" topic="$2"; shift 2
   local ep; ep="$(_endpoint "$@")" || exit 1
-  { printf 'SUB %s\n' "$topic"; cat >/dev/null; } | socat - "$ep"
+  # Send the SUB control line, then hold the connection open so the broker keeps
+  # our mailbox alive; socat pumps the socket's incoming messages to our stdout.
+  # A FIFO feeds socat's stdin: we write the control line into it and keep it open
+  # (exec 4>) so socat's socket stays up with no further bytes. On SIGTERM/INT we
+  # close the fd and kill socat, so the broker sees EOF and its EXIT trap unlinks
+  # our mailbox FIFO (forget-on-death).
+  local cf; cf="$(mktemp -u)"; mkfifo "$cf"
+  socat "$ep" - <"$cf" &
+  local scpid=$!
+  exec 4>"$cf"
+  printf 'SUB %s\n' "$topic" >&4
+  trap 'exec 4>&-; kill "$scpid" 2>/dev/null; rm -f "$cf"; exit 0' TERM INT
+  wait "$scpid"
+  exec 4>&-; rm -f "$cf"
 }
 
 pub() {
@@ -158,7 +269,15 @@ pub() {
     esac
   done
   local ep; ep="$(_endpoint "${ep_args[@]}")" || exit 1
-  { printf 'PUB %s%s\n' "$topic" "$opts"; cat; } | socat - "$ep"
+  # Stream the control line + payload, then LINGER before closing. There is no
+  # app-level publish ack in the protocol, so if we let socat close the instant
+  # stdin EOFs, the broker's handler can be torn down with records still in the
+  # socket buffer (measured: ~40% loss on a 4000-record burst). Holding the
+  # connection open briefly lets the broker drain its receive buffer. The linger
+  # is bounded (SHELLMUX_PUB_LINGER seconds, default 1) — honest limitation: a
+  # burst that takes longer than the linger to drain can still lose its tail.
+  local linger="${SHELLMUX_PUB_LINGER:-1}"
+  { printf 'PUB %s%s\n' "$topic" "$opts"; cat; sleep "$linger"; } | socat - "$ep"
 }
 
 # ---------------------------------------------------------------------------

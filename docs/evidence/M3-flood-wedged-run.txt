@@ -1,0 +1,14 @@
+### M3 flood_wedged — BOUNDED (production), default FLOOD=1000 ###
+== flood_wedged: src/shellmux ==
+  (healthy subs drained 1000/1000 of 1000 in 3s; wedged throttle is reported, not hidden)
+  ok   F1 healthy subs received the ENTIRE flood despite a wedged peer (no permanent starvation)
+  ok   F2 wedged-sub overflow is visible (sum drops_*=353), never silent
+  ok   F3 publisher did NOT accumulate processes (max broker-descendants=17)
+  ok   F4 healthy sub frames are all intact/well-formed (no torn/concatenated records)
+== flood_wedged result: pass=4 fail=0 (max_descendants=17, drops=353) ==
+
+### M3 flood_wedged — LEAKY negative control (must balloon) ###
+== flood_wedged: src/shellmux ==
+  (leaky mode) max broker-descendant procs during flood = 1325
+  ok   F3' control (must balloon): leaky `> $f &` writer accumulated 1325 processes
+== flood_wedged result: pass=1 fail=0 (LEAKY control) ==

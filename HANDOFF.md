@@ -1,18 +1,18 @@
 # HANDOFF — shellmux
-Last updated: 2026-06-07 04:20 UTC   |   Last commit: (M2 commit, see git log)   |   Current milestone: **M0 + M1 + M2 PASSED** → next is M3
+Last updated: 2026-06-18 13:30 UTC   |   Last commit: (M3 commit, see git log)   |   Current milestone: **M0 + M1 + M2 + M3 PASSED** → next is M3b/M4
 
 ## If you are a new agent, START HERE
 M0 — the riskiest experiment, the project's whole reason to exist — is **GREEN**.
 `tests/chaos_deadline.sh` fires **0 missed / 0 duplicate over N=5000** adversarial-timing trials
 (publish injected into the exact `[next=MIN → blocking read]` window every trial), at **0.00% idle
-CPU**, and all **three must-fail negative controls fail on their predicted axis**. Evidence:
-`docs/evidence/M0-chaos-run.txt`. M1 (crash recovery) and M2 (socat-fork acceptor + SUB handler +
-per-subscriber FIFO + forget-on-death over UNIX **and** TCP) are also GREEN.
+CPU**, with **three must-fail negative controls**. M1 (crash recovery), M2 (socat-fork acceptor +
+SUB + per-subscriber FIFO + forget-on-death over UNIX **and** TCP), and M3 (length-prefixed fan-out +
+bounded drainer + visible drops_$pid; PUB now delivers) are ALL GREEN.
 To reproduce: build the container (`docker build -t shellmux-dev .`) then run any test, e.g.
-`docker run --rm -v "$PWD:/work" -w /work shellmux-dev bash tests/sub_lifecycle.sh`
-(chaos N=5000 is ~2m45s; use `-e N_MAIN=200 -e N_NEG=40 -e N_DUP=20` for a ~15s smoke).
-Next task: **M3** — length-prefixed fan-out + bounded ring drainer + drops_$pid, per `docs/plan.md`.
-This is where PUB actually delivers to subscribers (the PUB verb in `src/shellmux` is currently a stub).
+`docker run --rm -v "$PWD:/work" -w /work shellmux-dev bash tests/flood_wedged.sh` (~5s).
+(chaos N=5000 is ~2m45s; use `-e N_MAIN=200 -e N_NEG=40 -e N_DUP=20` for a ~15s smoke.)
+Next: **M3b** — wire `--at`/`--delay` deferred PUB through the M0 scheduler (stage-then-poke from the
+PUB path); then **M4** (introspection polish), **M5** (Pi demo + benchmarks).
 
 ## Done (with commit shas)
 - Repo scaffolded (commit aeb9198 + e871e52 + e602872).
@@ -40,9 +40,22 @@ This is where PUB actually delivers to subscribers (the PUB verb in `src/shellmu
   - `tests/sub_lifecycle.sh`: S1 SUB/UNIX registers FIFO, S2 disconnect unlinks (forget-on-death),
     S3 concurrent isolation, S4 SUB/TCP, S2' must-fail no-trap control strands the FIFO. All green.
   - `docs/evidence/M2-sub-lifecycle-run.txt`. NO M0/M1 regression (smoke 3/3, crash 4/4, chaos 0/0).
+- **M3 — length-prefixed fan-out + bounded drainer + drops_$pid: PASS.** (this session's M3 commit)
+  - `src/shellmux` (~290 lines): PUB now delivers. `fanout()` writes each sub's FIFO with a single
+    serial `timeout $wto bash -c 'printf > fifo'` (NO `&`) — kernel pipe buffer (64KiB) is the ring;
+    wedged write times out → drop + flock'd `drops_<pid>`. The drainer reads length-prefixed frames
+    (`<len>\n<bytes>`), validates the byte count (3-layer torn-frame defense), and does a bounded
+    socket write (drops on socket-timeout, never on read-timeout). REPLACES terminalphone's
+    `> $f &` leak (terminalphone.sh:1570).
+  - Design chosen via a design-exploration workflow (3 candidates judged): "kernel-buffer-as-ring"
+    won decisively over two explicit-ring variants (which had a re-emit-the-window bug). `cut_the_claim`
+    was false — the design is genuinely one-long-lived-process-per-sub.
+  - `tests/flood_wedged.sh`: F1 healthy subs get the whole flood at full speed despite a wedged peer,
+    F2 drops visible, F3 publisher process count FLAT (~15), F4 framing intact; F3' must-fail leaky
+    control balloons to ~1300 procs. `docs/evidence/M3-flood-wedged-run.txt`. NO M0/M1/M2 regression.
 
 ## In progress (exact state)
-- Nothing mid-edit. M0/M1/M2 closed; tree is buildable & green.
+- Nothing mid-edit. M0/M1/M2/M3 closed; tree is buildable & all suites green.
 
 ## Adversarial verification — DONE (PROMPT §3/§7.2): claim SURVIVES
 - 4 skeptic lenses (correctness, negative-control, prior-art-fidelity, measurement-validity) each
@@ -54,18 +67,17 @@ This is where PUB actually delivers to subscribers (the PUB verb in `src/shellmu
   at M5; crash-mid-`mv` at-most-once is M1's job to test; ms-vs-~1s resolution wording could be crisper.
 
 ## Next (ordered)
-1. **M3** — length-prefixed fan-out + bounded ring drainer + drops_$pid. PUB delivers to subscribers
-   (the PUB verb in `src/shellmux` is a stub). Publisher writes each sub's FIFO (never the socket);
-   ONE long-lived drainer per sub owns the last-N ring + writes the socket + bumps drops_$pid on
-   overflow — REPLACING terminalphone's `> $f &` leak (terminalphone.sh:1570). Records are
-   length-prefixed (`<decimal-len>\n<bytes>`) so a torn write is caught by short-read.
-   `tests/flood_wedged.sh`: 3 subs, 1 wedged; flood; assert healthy subs real-time, drops_<wedged>
-   rises, and `ps --ppid $PUB | wc -l` stays FLAT (the refutation of the `> $f &` leak).
-2. **M3b** — `--at`/`--delay` deferred PUB wired through the M0 scheduler (stage-then-poke from the
-   PUB path; scheduler fires into the same fan-out). Small once fan-out exists.
-3. **M4** — death cleanup (`EXIT` trap unlink ✓ done in M2, `[ -p ]` skip in fan-out, `pkill -P`
-   broker shutdown ✓ done) + full ls/cat introspection. Mostly lands with M3.
-4. **M5** — Pi demo + benchmarks (re-measure latency on real hardware per the verification caveat).
+1. **M3b** — `--at`/`--delay` deferred PUB wired through the M0 scheduler. The PUB handler already
+   parses `--at`/`--delay` into `$at`/`$delay` but ignores them; wire it: stage
+   `deferred/<run_at_ms>.<seq>` then poke `wake.fifo` (stage-then-poke), and have the scheduler's
+   fire path call into the same fan-out (it currently appends to fires.log — point it at fanout()).
+   Add a test: `--delay 1` lands within ~1s + idle CPU ~0 during the wait.
+2. **M4** — introspection polish (ls/cat over topics/, drops_*, deferred/) + topic/deferred GC reaper
+   (stale drops_* and empty topic dirs). `EXIT`-trap unlink ✓ (M2), `[ -p ]` skip ✓ (M3 fanout),
+   `pkill -P` broker shutdown ✓ (M2 serve).
+3. **M5** — Pi demo + benchmarks (re-measure latency on real hardware per the M0 verification caveat).
+4. Consider trimming `src/shellmux` toward the ~150-line target (currently ~290 with fanout+drainer+
+   client helpers+recovery) OR honestly restate the line budget in the spec/DEMO.
 
 ## Decisions & rationale (so nobody relitigates them)
 - **Wake reader uses `read -N 1`, NOT line mode.** A poke is a single newline-less byte; a
@@ -103,6 +115,18 @@ This is where PUB actually delivers to subscribers (the PUB verb in `src/shellmu
   so forget-on-death would silently never fire. A handler process serves exactly one connection, so
   a global is correct. (Verified: the bug manifested as `line 1: INFIFO: unbound variable` + a
   stranded FIFO that the no-trap control couldn't be distinguished from.)
+- **(M3) Backpressure design = "kernel pipe buffer IS the ring."** Chosen via a 3-candidate design
+  workflow. The publisher does ONE serial `timeout $wto bash -c 'printf > fifo'` per sub per record
+  (NO `&`). Healthy sub: ~µs. Wedged sub: its 64KiB FIFO fills, the write times out (zero partial
+  bytes), we drop + bump `drops_<pid>` under flock. Drainer reads length-prefixed frames, validates
+  the byte count, bounded-writes the socket. NOT fork-free (each write is a ~0.5-10ms `timeout
+  bash -c`); the honest claim is "no per-message process ACCUMULATION" — proven by F3 (flat ~15
+  procs) vs the leaky control (~1300). `SHELLMUX_WRITE_TIMEOUT` tunes the wedged-abandon latency;
+  it is read by BOTH fanout and drainer, so `serve` exports it to forked handlers.
+- **(M3) `pub` lingers after stdin EOF.** No app-level ack, so closing the instant `cat` EOFs lets
+  the broker be torn down with records still in the socket buffer (~40% loss on a burst). `pub`
+  holds the connection `SHELLMUX_PUB_LINGER`s (default 1) so the broker drains. Honest limit: a
+  burst longer than the linger can lose its tail — documented, not hidden.
 
 ## Dead ends (don't retry — and why)
 - `pid="$(start_sched)"` where the backgrounded sched inherits the command-substitution stdout pipe
@@ -111,6 +135,14 @@ This is where PUB actually delivers to subscribers (the PUB verb in `src/shellmu
 - `trap 'running=0'` to stop the loop on signal — does NOT work (read-retry, see Decisions).
 - `while read -N1 -t 0` to drain a FIFO — `read -t 0` is a *non-consuming availability probe*, so
   it spins forever. Use a tiny positive timeout (`-t 0.001`) to actually consume.
+- **(M3, big one) `( ...; sleep N ) | socat &` then `kill "$!"; wait "$!"` HANGS ~N seconds.** In a
+  `A | B &` pipeline, `$!` is **B** (socat), and `wait` on any pipeline member blocks on the WHOLE
+  pipeline — including the orphaned `sleep N` linger that `kill $!` never reached. This made the M3
+  flood test MIS-REPORT a true ~1s delivery as ~90s, sending me on a long false hunt for a broker
+  "throttle" that did not exist. Diagnosed by a multi-agent workflow whose synthesis measured
+  `kill+wait took 88s` directly. Fix: run the publisher under `setsid`, `kill -- -$PGID` the whole
+  group, and NEVER `wait` on it; capture elapsed at completion INSIDE the poll loop, not after
+  teardown. LESSON: when a "performance" number looks absurd, suspect the measurement harness first.
 
 ## Open questions / assumptions made
 - Idle-CPU measured via `/proc/<pid>/stat` utime+stime delta over 5s == 0 ticks → 0.00%. Sound on
