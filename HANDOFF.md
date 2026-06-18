@@ -1,5 +1,5 @@
 # HANDOFF — shellmux
-Last updated: 2026-06-18 13:30 UTC   |   Last commit: (M3 commit, see git log)   |   Current milestone: **M0 + M1 + M2 + M3 PASSED** → next is M3b/M4
+Last updated: 2026-06-18 13:45 UTC   |   Last commit: (M3b commit, see git log)   |   Current milestone: **M0 + M1 + M2 + M3 + M3b PASSED** → next is M4
 
 ## If you are a new agent, START HERE
 M0 — the riskiest experiment, the project's whole reason to exist — is **GREEN**.
@@ -8,11 +8,12 @@ M0 — the riskiest experiment, the project's whole reason to exist — is **GRE
 CPU**, with **three must-fail negative controls**. M1 (crash recovery), M2 (socat-fork acceptor +
 SUB + per-subscriber FIFO + forget-on-death over UNIX **and** TCP), and M3 (length-prefixed fan-out +
 bounded drainer + visible drops_$pid; PUB now delivers) are ALL GREEN.
-To reproduce: build the container (`docker build -t shellmux-dev .`) then run any test, e.g.
-`docker run --rm -v "$PWD:/work" -w /work shellmux-dev bash tests/flood_wedged.sh` (~5s).
+**M3b closes the loop**: `pub --delay N` / `pub --at <epoch>` stage a deferred file and the M0
+scheduler fires the real publish into the topic fan-out — race-free, idle CPU ~0 during the wait
+(the demo's headline beat). To reproduce: build the container (`docker build -t shellmux-dev .`)
+then run any test, e.g. `docker run --rm -v "$PWD:/work" -w /work shellmux-dev bash tests/deferred_pub.sh`.
 (chaos N=5000 is ~2m45s; use `-e N_MAIN=200 -e N_NEG=40 -e N_DUP=20` for a ~15s smoke.)
-Next: **M3b** — wire `--at`/`--delay` deferred PUB through the M0 scheduler (stage-then-poke from the
-PUB path); then **M4** (introspection polish), **M5** (Pi demo + benchmarks).
+Next: **M4** (introspection polish + topic/deferred GC reaper), then **M5** (Pi demo + benchmarks).
 
 ## Done (with commit shas)
 - Repo scaffolded (commit aeb9198 + e871e52 + e602872).
@@ -53,9 +54,19 @@ PUB path); then **M4** (introspection polish), **M5** (Pi demo + benchmarks).
   - `tests/flood_wedged.sh`: F1 healthy subs get the whole flood at full speed despite a wedged peer,
     F2 drops visible, F3 publisher process count FLAT (~15), F4 framing intact; F3' must-fail leaky
     control balloons to ~1300 procs. `docs/evidence/M3-flood-wedged-run.txt`. NO M0/M1/M2 regression.
+- **M3b — deferred (`--at`/`--delay`) PUB through the scheduler: PASS.** (this session's M3b commit)
+  - PUB stages `deferred/<run_at_ms>.<seq>` (content `<topic>\n<payload>`) then pokes wake.fifo
+    (stage-then-poke). `src/sched.sh` got a pluggable `deliver()`: default = append to fires.log
+    (M0 chaos UNCHANGED), or `SCHED_FIRE_HOOK` = `shellmux _fire <file>` which fans the payload into
+    the topic. `serve` exports SCHED_FIRE_HOOK + SHELLMUX_DIR. `--delay` wins over `--at` (honker
+    precedence). Added `now_ms` to src/shellmux (PUB path needs it).
+  - `tests/deferred_pub.sh`: D1 `--delay 1` fires AT the deadline (~40ms), D2 `--at` absolute, D3
+    scheduler idle (0 CPU ticks) during the wait, D1' must-fail fire-now control
+    (`tests/negative/sched_firenow.sh`, one knob = due-check removed) delivers early.
+  - `docs/evidence/M3b-deferred-pub-run.txt`. **M0 chaos N=5000 STILL 0/0** after the sched change.
 
 ## In progress (exact state)
-- Nothing mid-edit. M0/M1/M2/M3 closed; tree is buildable & all suites green.
+- Nothing mid-edit. M0/M1/M2/M3/M3b closed; tree is buildable & all suites green.
 
 ## Adversarial verification — DONE (PROMPT §3/§7.2): claim SURVIVES
 - 4 skeptic lenses (correctness, negative-control, prior-art-fidelity, measurement-validity) each
@@ -67,17 +78,16 @@ PUB path); then **M4** (introspection polish), **M5** (Pi demo + benchmarks).
   at M5; crash-mid-`mv` at-most-once is M1's job to test; ms-vs-~1s resolution wording could be crisper.
 
 ## Next (ordered)
-1. **M3b** — `--at`/`--delay` deferred PUB wired through the M0 scheduler. The PUB handler already
-   parses `--at`/`--delay` into `$at`/`$delay` but ignores them; wire it: stage
-   `deferred/<run_at_ms>.<seq>` then poke `wake.fifo` (stage-then-poke), and have the scheduler's
-   fire path call into the same fan-out (it currently appends to fires.log — point it at fanout()).
-   Add a test: `--delay 1` lands within ~1s + idle CPU ~0 during the wait.
-2. **M4** — introspection polish (ls/cat over topics/, drops_*, deferred/) + topic/deferred GC reaper
+1. **M4** — introspection polish (ls/cat over topics/, drops_*, deferred/) + topic/deferred GC reaper
    (stale drops_* and empty topic dirs). `EXIT`-trap unlink ✓ (M2), `[ -p ]` skip ✓ (M3 fanout),
-   `pkill -P` broker shutdown ✓ (M2 serve).
-3. **M5** — Pi demo + benchmarks (re-measure latency on real hardware per the M0 verification caveat).
-4. Consider trimming `src/shellmux` toward the ~150-line target (currently ~290 with fanout+drainer+
-   client helpers+recovery) OR honestly restate the line budget in the spec/DEMO.
+   `pkill -P` broker shutdown ✓ (M2 serve). Mostly a reaper + a small `ls`/`cat` introspection test.
+2. **M5** — Pi demo (`DEMO.md`) + benchmarks (re-measure latency on real hardware per the M0 caveat).
+   The demo beats already work end-to-end: M0 chaos live, `pub --delay 5` lands on the second at ~0%
+   CPU (M3b), wedged-flood keeps `ps` flat (M3). Assemble + record numbers.
+3. The evaluator loop (PROMPT §4) once the product is usable — fan out persona users of the tool.
+4. Consider trimming `src/shellmux` toward the ~150-line target (currently ~340 with fanout+drainer+
+   deferred-PUB+client helpers+_fire) OR honestly restate the line budget in spec/DEMO (lean toward
+   restating — the count is honest and the code is cohesive).
 
 ## Decisions & rationale (so nobody relitigates them)
 - **Wake reader uses `read -N 1`, NOT line mode.** A poke is a single newline-less byte; a

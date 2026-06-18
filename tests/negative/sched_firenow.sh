@@ -1,4 +1,14 @@
 #!/usr/bin/env bash
+# tests/negative/sched_firenow.sh
+# ============================================================================
+# DELIBERATELY BROKEN NEGATIVE CONTROL for tests/deferred_pub.sh (D1').
+# A copy of src/sched.sh with EXACTLY ONE change: the due-check
+# `if [ "$ra" -le "$now" ]` is removed, so it fires EVERY deferred record on the
+# first scan, IGNORING its run_at. A deferred publish therefore arrives BEFORE
+# its deadline. The test asserts this control DOES fire early; if it waited like
+# the real scheduler, the D1/D2 "fires at the deadline" proof would be vacuous.
+# ============================================================================
+# (original header follows)
 # src/sched.sh — shellmux data-derived deadline scheduler (THE contribution).
 #
 # Fires timed (deferred) records race-free against concurrent publishes, with
@@ -109,13 +119,13 @@ fire_due() {
   for f in "$DIR"/deferred/*; do
     [ -e "$f" ] || continue
     b=${f##*/}; ra=${b%%.*}
-    if [ "$ra" -le "$now" ]; then
-      dest="$DIR/outbox/$b"
-      if mv "$f" "$dest" 2>/dev/null; then   # <-- single commit point
-        deliver "$dest" "$now"
-        rm -f "$dest"
-      fi
+    # vvvv THE ONE BROKEN CHANGE: no `[ "$ra" -le "$now" ]` due-check — fire NOW.
+    dest="$DIR/outbox/$b"
+    if mv "$f" "$dest" 2>/dev/null; then
+      deliver "$dest" "$now"
+      rm -f "$dest"
     fi
+    # ^^^^ fires every record on first scan, ignoring run_at (delivers early).
   done
 }
 

@@ -1,0 +1,6 @@
+== deferred_pub: src/shellmux ==
+  ok   D1 --delay 1 fired AT the deadline (arrival 40ms relative — not early, not poll-late)
+  ok   D2 --at <epoch+2> delivered at the absolute deadline (arrival 34ms relative)
+  ok   D3 scheduler idle during the deferred wait (0 CPU ticks over 2s)
+  ok   D1' control (must fire early): fire-now scheduler delivered before the 5s deadline
+== deferred_pub result: pass=4 fail=0 ==
