@@ -11,3 +11,6 @@
 # editor / os
 .DS_Store
 node_modules/
+
+# evaluator scenario scratch (regenerated each round)
+/.eval-scratch/
