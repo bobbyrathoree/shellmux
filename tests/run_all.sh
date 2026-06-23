@@ -17,7 +17,9 @@ declare -a SUITES=(
   "crash_recovery.sh"   # M1: deferred re-arm + outbox recovery + at-most-once
   "sub_lifecycle.sh"    # M2: SUB register / forget-on-death / TCP + no-trap control
   "flood_wedged.sh"     # M3: bounded fan-out, ps flat, drops visible + leaky control
+  "concurrent_frames.sh" # R3: frame integrity under concurrent >PIPE_BUF publishers + no-wlock control
   "deferred_pub.sh"     # M3b: --delay/--at fire at the deadline + fire-now control
+  "corrupt_deferred.sh" # R3: scheduler survives a corrupt deferred filename + no-skip control
   "introspection.sh"    # M4: ls/cat state + GC reaper (preserves live state)
   "input_validation.sh" # R1: reject hostile --at/--delay + topic names + NO_VALIDATE control
 )

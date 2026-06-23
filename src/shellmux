@@ -124,7 +124,28 @@ fanout() {
       # inside the timeout-governed bash -c, so even a blocking open (sub died in
       # a race, FIFO present but no reader) is bounded — not just the write.
       pid="${f##*/sub_}"; pid="${pid%.fifo}"
-      if ! timeout "$wto" bash -c 'printf "%s" "$2" > "$1"' _ "$f" "$frame" 2>/dev/null; then
+      # Per-subscriber WRITE LOCK: a FIFO write is atomic only up to PIPE_BUF
+      # (~4096B on Linux), so two concurrent socat-forked publishers fanning out
+      # records LARGER than PIPE_BUF to the SAME sub would interleave their bytes,
+      # and a torn/concatenated frame whose size happens to match the length
+      # prefix slips past the drainer's short-read guard and reaches the sub
+      # corrupted (tests/concurrent_frames.sh). flock on a PER-SUB lock makes the
+      # whole frame write atomic w.r.t. other publishers to that sub. The lock is
+      # per-subscriber (.wlock_<pid>), NOT global, so writes to DIFFERENT subs
+      # still run in parallel and a wedged peer never blocks a healthy one (the M3
+      # isolation property holds). fd 8 is opened INSIDE the timeout-governed
+      # bash -c, so the lock is released when the write completes OR is killed by
+      # the timeout — a wedged sub still drops + bumps drops_<pid> exactly as
+      # before; only atomicity is added, not a change to the backpressure contract.
+      # SHELLMUX_NO_WLOCK=1 drops the lock (the one-knob must-fail control, G1'):
+      # the interleave corruption returns, proving the lock is load-bearing.
+      local writer
+      if [ "${SHELLMUX_NO_WLOCK:-0}" = "1" ]; then
+        writer='printf "%s" "$2" > "$1"'                       # pre-fix: unlocked
+      else
+        writer='exec 8>"$3"; flock 8; printf "%s" "$2" > "$1"' # locked per-sub
+      fi
+      if ! timeout "$wto" bash -c "$writer" _ "$f" "$frame" "$td/.wlock_$pid" 2>/dev/null; then
         # serialize the read-modify-write so concurrent publishers to the same
         # wedged sub don't lose increments (flock'd-counter shape,
         # terminalphone.sh:1585-1590). `local` is invalid in a ( ) subshell, so v
@@ -270,8 +291,9 @@ _fire() {
 
 # ---------------------------------------------------------------------------
 # _reap <dir>  — one GC sweep over broker state. Removes:
-#   - a drops_<pid> whose sub_<pid>.fifo no longer exists (the subscriber died;
-#     its forget-on-death EXIT trap unlinks the FIFO but not the counter file);
+#   - a drops_<pid> or .wlock_<pid> whose sub_<pid>.fifo no longer exists (the
+#     subscriber died; its forget-on-death EXIT trap unlinks the FIFO but not the
+#     per-sub counter/lock files);
 #   - orphaned deferred/ files older than SHELLMUX_DEFERRED_TTL seconds (default
 #     86400) — a safety net for records whose delivery was abandoned;
 #   - empty topic directories.
@@ -282,10 +304,11 @@ _reap() {
   ttl="${SHELLMUX_DEFERRED_TTL:-86400}"
   for td in "$dir"/topics/*/; do
     [ -d "$td" ] || continue
-    # stale drops_<pid>: no matching sub_<pid>.fifo
-    for f in "$td"drops_*; do
+    # stale per-sub state: a drops_<pid> counter or .wlock_<pid> fan-out lock
+    # whose sub_<pid>.fifo no longer exists (the subscriber died).
+    for f in "$td"drops_* "$td".wlock_*; do
       [ -e "$f" ] || continue
-      b=${f##*/}; pid=${b#drops_}
+      b=${f##*/}; pid=${b#drops_}; pid=${pid#.wlock_}
       [ -p "${td}sub_${pid}.fifo" ] || rm -f "$f"
     done
     # empty topic dir (no entries at all)

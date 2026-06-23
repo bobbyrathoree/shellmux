@@ -87,25 +87,27 @@ fi
 # --- I5 setup: create a STALE drops file (pid with no FIFO) + an empty topic -
 STALE_PID=999999
 printf '3\n' > "$D/topics/weather/drops_$STALE_PID"   # no sub_999999.fifo exists
+: > "$D/topics/weather/.wlock_$STALE_PID"             # stale per-sub fan-out lock (no FIFO)
 mkdir -p "$D/topics/_emptytopic"                       # empty topic dir
-# I5' control precondition: the stale file must exist before reaping.
-if [ -e "$D/topics/weather/drops_$STALE_PID" ] && [ -d "$D/topics/_emptytopic" ]; then
-  ok "I5' precondition: stale drops_$STALE_PID and empty topic exist before reap"
+# I5' control precondition: the stale files must exist before reaping.
+if [ -e "$D/topics/weather/drops_$STALE_PID" ] && [ -e "$D/topics/weather/.wlock_$STALE_PID" ] && [ -d "$D/topics/_emptytopic" ]; then
+  ok "I5' precondition: stale drops_$STALE_PID, .wlock_$STALE_PID and empty topic exist before reap"
 else
   bad "I5' precondition failed (test bug)"
 fi
 
 # --- I5: reap ---------------------------------------------------------------
 bash "$SHELLMUX" _reap "$D" 2>/dev/null
-stale_gone=0; live_kept=0; livefifo_kept=0; empty_gone=0
+stale_gone=0; stalelock_gone=0; live_kept=0; livefifo_kept=0; empty_gone=0
 [ -e "$D/topics/weather/drops_$STALE_PID" ] || stale_gone=1
+[ -e "$D/topics/weather/.wlock_$STALE_PID" ] || stalelock_gone=1
 [ -e "$D/topics/weather/drops_$LIVE_PID" ] && live_kept=1
 [ -p "$LIVE_FIFO" ] && livefifo_kept=1
 [ -d "$D/topics/_emptytopic" ] || empty_gone=1
-if [ "$stale_gone" = 1 ] && [ "$empty_gone" = 1 ]; then
-  ok "I5 reaper removed the stale drops file AND the empty topic dir"
+if [ "$stale_gone" = 1 ] && [ "$stalelock_gone" = 1 ] && [ "$empty_gone" = 1 ]; then
+  ok "I5 reaper removed the stale drops file, stale .wlock AND the empty topic dir"
 else
-  bad "I5 reaper missed stale state (stale_gone=$stale_gone empty_gone=$empty_gone)"
+  bad "I5 reaper missed stale state (drops_gone=$stale_gone wlock_gone=$stalelock_gone empty_gone=$empty_gone)"
 fi
 if [ "$live_kept" = 1 ] && [ "$livefifo_kept" = 1 ] && [ -d "$D/topics/weather" ]; then
   ok "I5 reaper PRESERVED live state (live drops, live FIFO, non-empty topic)"
