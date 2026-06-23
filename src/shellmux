@@ -26,8 +26,28 @@ set -uo pipefail
 
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 SCHED="$(dirname "$SELF")/sched.sh"
+SHELLMUX_VERSION="0.1.0"
 
 die() { printf 'shellmux: %s\n' "$*" >&2; exit 1; }
+
+# main_usage [rc] — top-level help. rc 0 (explicit help) prints to stdout; a
+# nonzero rc (unknown/empty command) prints to stderr, so `$?` distinguishes a
+# happy `--help` from a usage error (same arg-rc discipline as sub/pub usage()).
+main_usage() {
+  local rc="${1:-0}" out=1
+  [ "$rc" -ne 0 ] && out=2
+  {
+    printf 'shellmux %s — a content-blind topic pub/sub broker in shell\n\n' "$SHELLMUX_VERSION"
+    printf 'usage:\n'
+    printf '  shellmux serve <dir> [--unix <path>] [--tcp <port>]   start the broker\n'
+    printf '  shellmux sub   <dir> <topic> [--unix <path>|--tcp <port>]\n'
+    printf '  shellmux pub   <dir> <topic> [--at <epoch>|--delay <s>] [--unix <path>|--tcp <port>]\n'
+    printf '  shellmux --version | --help\n\n'
+    printf 'state lives under <dir> (topics/, deferred/, outbox/); introspect with ls/cat.\n'
+    printf 'docs: https://github.com/bobbyrathoree/shellmux  (README, DEMO.md)\n'
+  } >&"$out"
+  exit "$rc"
+}
 
 # now_ms -> sets $REPLY to current unix time in ms (same fork-free convention as
 # src/sched.sh: $EPOCHREALTIME builtin on bash>=5, `date` fallback on bash 4).
@@ -477,5 +497,8 @@ case "$cmd" in
   _handle) _handle "$@" ;;
   _fire)   _fire "$@" ;;
   _reap)   _reap "$@" ;;
-  *) die "usage: shellmux {serve|sub|pub} ... (got '${cmd:-}')" ;;
+  version|--version|-V) printf 'shellmux %s\n' "$SHELLMUX_VERSION" ;;
+  help|--help|-h) main_usage 0 ;;        # explicit help: rc 0, stdout
+  '') main_usage 0 ;;                    # bare invocation: show help, rc 0
+  *) printf 'shellmux: unknown command %s\n\n' "$cmd" >&2; main_usage 1 ;;  # bad cmd: rc 1, stderr
 esac

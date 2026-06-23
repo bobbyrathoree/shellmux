@@ -77,9 +77,10 @@ We default to (1) and benchmark both on a real Pi.
 **As-built note (honesty reconciliation, post-implementation).** The "~150 lines / one screen"
 figure is the size of the *contribution* — `src/sched.sh` is **186 lines**. The full broker
 `src/shellmux` (acceptor + SUB/PUB + bounded-drainer fan-out + deferred-PUB wiring + client helpers +
-GC reaper + input validation) is **481 lines** (374 pre-R1; +78 for the input-boundary gates that
+GC reaper + input validation) is **504 lines** (374 pre-R1; +78 for the input-boundary gates that
 validate the data path deriving the deadlines, +6 for the round-002 arg-rc split, +21 for the R3
-per-subscriber fan-out write lock and the corrupt-deferred skip guard). The pitch should say "the scheduler is one screen", not "the whole
+per-subscriber fan-out write lock and the corrupt-deferred skip guard, +23 for the v0.1.0 top-level
+`--version`/`--help`). The pitch should say "the scheduler is one screen", not "the whole
 broker". The wedged-flood beat is as-built true: healthy subscribers receive the full flood while a
 wedged peer's `drops_$pid` ticks up and `ps --ppid $PUB` stays flat (~15 vs a leaky control's ~1300).
 The bounded write is **not fork-free** (each is a `timeout bash -c`, ~0.5–10ms on the dev host); the

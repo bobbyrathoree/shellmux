@@ -1,5 +1,18 @@
 # HANDOFF — shellmux
-Last updated: 2026-06-22 (R3 session)   |   Branch: master (clean)   |   **STATUS: COMPLETE — all 5 DoD items met; evaluator loop CONVERGED over two rounds; spine re-proven + 2 off-axis bugs fixed this session**
+Last updated: 2026-06-23 (R3 session)   |   Branch: master (clean) + private GitHub remote   |   **STATUS: COMPLETE + SHIPPABLE — all 5 DoD met; spine re-proven on real ARM64; 2 off-axis bugs fixed; packaged for v0.1.0 (README/logo/CONTRIBUTING/install.sh/--version)**
+
+## Prod-readiness pass (2026-06-23) — packaged for public/contributor use
+- Pushed to **private** GitHub repo `bobbyrathoree/shellmux` (SSH remote `origin`); `.git` backed up before `gh` (survived intact).
+- Added: MIT `LICENSE`; `assets/logo.svg` (terminal-prompt wordmark); user-facing `README.md` rewrite
+  (logo, honest positioning = homelab/airgap NOT Mosquitto, install, 60s quickstart, the proof as the
+  hero, platform reqs up front, builder docs moved to a Contributing section); `CONTRIBUTING.md` (the
+  must-fail-negative-control rule + honesty ethos + scope + dev-container loop); `install.sh`
+  (dep-check + libexec/wrapper install to ~/.local, `--prefix`/`--check`/`--uninstall`, smoke-tested);
+  top-level `--version`/`--help`/`-V`/`-h`/bare-invocation in `src/shellmux` (`SHELLMUX_VERSION=0.1.0`).
+- Line counts now: `src/sched.sh` 186, `src/shellmux` 504 (+23 for the help/version block). Docs
+  (README/DEMO/spec) reconciled. NO proof-axis change — `input_validation.sh` V5/V6 arg-rc contract
+  intact; full suite re-run after.
+- Next: tag `v0.1.0` + `gh release create` (see "Next").
 
 ## If you are a new agent, START HERE
 **The build is done and green, M0 through M5, the product-phase evaluator loop converged over two

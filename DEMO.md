@@ -178,7 +178,7 @@ transfers directly.)
   (default 1yr) or the publish returns nonzero with a reason. The data path that
   *derives* the scheduler's deadlines is validated before it reaches the proven
   core (`tests/input_validation.sh`, `SHELLMUX_NO_VALIDATE=1` must-fail control).
-- **Line count:** `src/sched.sh` is 186 lines; `src/shellmux` is 481 (fan-out +
+- **Line count:** `src/sched.sh` is 186 lines; `src/shellmux` is 504 (fan-out +
   bounded drainer + deferred PUB + client helpers + reaper + input validation +
   the corrupt-deferred skip guard and the per-sub fan-out write lock added in R3).
   The "~150 lines" pitch is the *scheduler*, which is the contribution; the
