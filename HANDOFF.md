@@ -1,18 +1,24 @@
 # HANDOFF — shellmux
-Last updated: 2026-06-18 14:00 UTC   |   Last commit: (M5/closeout, see git log)   |   **STATUS: COMPLETE (M0–M5 green)**
+Last updated: 2026-06-23 (R1 session)   |   Branch: chore/cleanup-and-eval-loop   |   **STATUS: COMPLETE (M0–M5 green) + R1 evaluator round done**
 
 ## If you are a new agent, START HERE
-**The build is done and green, M0 through M5.** The single falsifiable claim is PROVEN:
-`tests/chaos_deadline.sh` fires **0 missed / 0 duplicate over N=5000** adversarial-timing trials
-(publish injected into the exact `[next=MIN → blocking read]` window every trial), at **0.00% idle
-CPU**, with three must-fail negative controls, and it survived a 4-lens adversarial verification.
-Around it: M1 crash recovery, M2 socat-fork acceptor + per-sub FIFO + forget-on-death (UNIX+TCP),
-M3 bounded fan-out drainer (`ps` flat vs leaky control), M3b deferred `--at`/`--delay` firing through
-the scheduler, M4 GC reaper + ls/cat introspection, M5 demo + benchmarks. Reproduce from clean:
+**The build is done and green, M0 through M5, and the product-phase evaluator loop (DoD #5) has now
+run.** The single falsifiable claim is PROVEN and ADVERSARIALLY RE-CONFIRMED: `tests/chaos_deadline.sh`
+fires **0 missed / 0 duplicate over N=5000** adversarial-timing trials (publish injected into the exact
+`[next=MIN → blocking read]` window every trial), at **0.00% idle CPU**, with three must-fail negative
+controls. In R1 an adversarial-flooder *product user* ran the full N=5000 gate live and independently
+confirmed 0/0 ("a working falsifier, not decorative"). Around it: M1 crash recovery, M2 socat-fork
+acceptor + per-sub FIFO + forget-on-death (UNIX+TCP), M3 bounded fan-out drainer (`ps` flat vs leaky
+control), M3b deferred `--at`/`--delay` firing through the scheduler, M4 GC reaper + ls/cat
+introspection, M5 demo + benchmarks. **R1 (this session) added input-boundary hardening** (the data
+path that DERIVES the deadlines was unvalidated) + fixed a flood-test orphan leak + truthed-up docs.
+Reproduce from clean:
 `docker build -t shellmux-dev . && docker run --rm -v "$PWD:/work" -w /work shellmux-dev bash tests/run_all.sh`
-(`-e N_MAIN=400` for a ~90s pass). Demo script: `DEMO.md`. Per-milestone evidence: `docs/evidence/`.
-Remaining optional work (NOT blockers): run the product-phase evaluator loop (PROMPT §4) with real
-tool users; re-measure benchmarks on an actual $5 Pi for the slide. See "Open / optional" below.
+(now **8 suites**; `-e N_MAIN=400` for a ~90s pass). Demo: `DEMO.md`. Evidence: `docs/evidence/`.
+Evaluator round artifacts: `eval/feedback/{raw,synthesis,analysis}/round-001*`.
+**This work is on branch `chore/cleanup-and-eval-loop`, not yet merged to `master`.** Remaining
+optional work (NOT blockers): merge the branch; a round-2 evaluator pass (loop is at correctness-
+convergence — see round-001-delta.md); re-measure benchmarks on a real $5 Pi.
 
 ## Done (with commit shas)
 - Repo scaffolded (commit aeb9198 + e871e52 + e602872).
@@ -74,20 +80,52 @@ tool users; re-measure benchmarks on an actual $5 Pi for the slide. See "Open / 
 - **DoD doc truth-up.** README rewritten from "pre-implementation" to as-built; spec.md got an
   as-built honesty note reconciling the line count (sched 167 / shellmux 374 vs the "~150" pitch =
   the scheduler) and the not-fork-free framing.
+- **chore — removed 12 orphaned M3-era scratch scripts (1040 lines).** (commit d18b555)
+  Root-level `measure_drainer*.sh`, `perf_*.sh`, `fork_cost_test.sh`, `tight_loop_test.sh`,
+  `truly_wedged_test.sh`, `final_attribution.sh`, `shellmux_instrumented.sh` — referenced by nothing
+  in tests/docs/src (the shipped benchmark is `tests/bench.sh`). Also gitignored `/.eval-scratch/`.
+- **R1 — product-phase evaluator loop + input-boundary hardening: DONE.** (commits 01125e1, 04798b3)
+  - Ran the product-phase loop (DoD #5): 12 persona×challenge agents that DROVE the running broker
+    via Docker → aggregator → analyst. Artifacts in `eval/feedback/{raw,synthesis,analysis}/round-001`.
+    Avg satisfaction 7.6/10, 12/12 completed. Flooder ran the full N=5000 gate live → 0/0 confirmed.
+  - Analyst's #1 finding: the data path that DERIVES deadlines (`--at`/`--delay` + topic name) was
+    unvalidated and failed silently — never exercised by the chaos harness. All 5 high-sev findings
+    reproduced by hand before fixing (no hallucination): F1 (`--at xyz` crashes handler), F7 (far-future
+    parks forever), H1 (`../../tmp/x` mkdir's outside state dir), F4 (`--help` set -u crash), H2
+    ("content-blind" overstated vs newline-text reality).
+  - Fix (`src/shellmux` +78 lines): `valid_topic` (whitelist `[A-Za-z0-9._-]+`, no leading dot) +
+    `valid_deadline` (non-neg int within `SHELLMUX_MAX_DEFER_S`, default 1yr), server-side in `_handle`
+    (load-bearing — raw socat bypasses client helpers) AND client-side in `sub`/`pub`; `usage()` guard.
+    ALL behind `SHELLMUX_NO_VALIDATE=1` (must-fail control, one-knob auditable).
+  - `tests/input_validation.sh` (V1–V5 + V4b + NC control); added to `run_all.sh` (now 8 suites).
+  - Fixed `flood_wedged.sh` orphan leak (the flaky-F1 / operator cold-start-hang report): cleanup
+    reaped only the broker subtree, not the script's own subscribers/wedged-socat/`sleep 300`. Now
+    reaps client pids + `pkill -P $$`. 5× back-to-back all green, no orphan pileup. Broker was always
+    correct (1000/1000 isolated); this was test hygiene.
+  - Doc truth-up: README/DEMO honest delivery contract (newline-delimited NUL-free text, H2),
+    at-most-once overdue-reboot loss named (H3), ceiling = RAM ~2.4MB/sub not fd (ceiling claim),
+    `cat drops_*` healthy-topic recipe (F2), line count 374→452.
+  - **NO REGRESSION:** chaos still missed=0 dup=0 ontime=5000 over N=5000; all 8 suites green. The
+    fix touches only the input boundary — never `src/sched.sh` or the mv commit point.
 
 ## In progress (exact state)
 - Nothing mid-edit. ALL milestones (M0–M5) closed; every suite green; docs reconciled to code.
 
 ## Open / optional (NOT blockers — the Definition of Done's build+proof items are met)
-- **Evaluator loop (PROMPT §4, DoD #5):** the pre-code spec-scoring round was effectively done via
-  the M0 adversarial-verification workflow. The product-phase loop (persona agents that *use* the
-  tool) is scaffolded in `eval/` but not run. Parked: the falsifiable claim is already proven and
-  adversarially verified; a usage loop would harden ergonomics, not correctness. Run it if iterating.
+- **Merge `chore/cleanup-and-eval-loop` → `master`.** All R1 work (cleanup, evaluator round,
+  input-validation hardening, flood-test fix, doc truth-up) lives on this branch. Fast-forwards
+  cleanly; the tree is buildable and 8/8 green.
+- **Evaluator loop (PROMPT §4, DoD #5): product-phase round 1 DONE.** Ran 12 persona×challenge agents
+  against the live broker; findings implemented (input validation) or doc-fixed; delta measured in
+  `eval/feedback/analysis/round-001-delta.md`. The loop is at **correctness-convergence** — round 1's
+  remaining unaddressed items are all explicitly-punted scope (binary transport, replay, acks,
+  throughput), not new threats to the one claim. A round 2 would mostly re-confirm; run it only if
+  iterating on ergonomics. The spec-phase scoring was effectively done via the M0 adversarial workflow.
 - **Pi benchmarks:** numbers are container-measured and labelled as such; re-measure on a real $5 Pi
   before quoting on a slide (the correctness properties are hardware-independent; the throughput
-  ceiling is not).
-- **Line-budget:** `src/shellmux` is 374 lines. Either trim toward "one screen" or keep the honest
-  restatement (recommended — the code is cohesive and the count is stated truthfully in DEMO/spec).
+  ceiling is not). DEMO now states the ceiling is RAM-bound (~2.4MB/sub, ~100–150 on a 512MB Pi).
+- **Line-budget:** `src/shellmux` is now 452 lines (was 374; +78 for input validation). Still honest
+  in DEMO/spec ("~150" = the scheduler, the contribution; the broker is plumbing). Trim is optional.
 
 ## Adversarial verification — DONE (PROMPT §3/§7.2): claim SURVIVES
 - 4 skeptic lenses (correctness, negative-control, prior-art-fidelity, measurement-validity) each
