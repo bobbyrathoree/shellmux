@@ -1,0 +1,97 @@
+{
+  "session_id": "eval-scripter-integrator-prod-malformed-frames-r002",
+  "round": 2,
+  "phase": "product",
+  "product_version": "a82ae2a",
+  "persona": "scripter-integrator",
+  "challenge_id": "prod-malformed-frames",
+  "challenge_text": "Publish payloads with embedded newlines, NUL bytes, multi-KB size, a wrong/oversized length prefix, and bogus --at values (past, far future, non-numeric). Confirm no crash, no hang. Verify docs now honestly predict the newline-delimited NUL-free-text contract, and that bogus --at is rejected (not a silent server-side crash).",
+  "completed": true,
+  "iterations": 3,
+  "time_taken_seconds": 0,
+  "capabilities_used": [
+    "pub embedded-newline payload",
+    "pub NUL-byte payload",
+    "pub 8KB single-line payload",
+    "pub unterminated (no trailing newline) payload",
+    "pub --at xyz / --delay 1.5 / --at 99999999999 / --delay -5 (rejection)",
+    "pub --at 1 (past) / --at NOW+5 (near future)",
+    "pub topic ../../../tmp/PWNED (traversal)",
+    "pub/sub --help",
+    "ls deferred/, cat -A subscriber output, grep broker.log",
+    "tests/flood_wedged.sh frame-integrity (F4)"
+  ],
+  "capabilities_attempted_but_failed": [],
+  "errors_encountered": [],
+  "friction_points": [
+    {
+      "id": "fp-001",
+      "description": "Exit-code inconsistency on missing required args. 'shellmux pub' with NO arguments prints usage and exits 0, while 'shellmux' (no subcommand) and 'shellmux boguscmd' both correctly exit 1. A scripter checking $? cannot distinguish 'I forgot the topic arg' from a successful publish via the exit code alone. The --help-style rc=0 leaked into the missing-args case. No data is published (harmless), but it breaks the otherwise-clean exit-code contract this persona relies on.",
+      "severity": "low",
+      "category": "ergonomics",
+      "workaround": "Always pass explicit args; do not rely on pub rc to detect a forgotten positional. Pipe stderr usage line as the real signal.",
+      "is_new": true
+    },
+    {
+      "id": "fp-002",
+      "description": "DEMO/README say a payload is 'truncated at its first newline', but a multi-line payload piped to a single pub (printf 'line1\\nline2\\nline3\\n') is delivered as THREE separate intact lines, not one truncated line. This is actually friendlier than the doc text (no data silently lost — each newline becomes its own record), but it means the literal wording 'truncated at first newline' under-describes what a scripter observes when piping a multi-line file. The contract a scripter should internalize is 'one record per line', which is fine; the 'truncated' framing is a slight mismatch with observed behaviour.",
+      "severity": "low",
+      "category": "claim-honesty",
+      "workaround": "Treat each line as its own record; the truncation wording only bites if you assume a multi-line blob arrives as one frame.",
+      "is_new": true
+    }
+  ],
+  "wished_for": [
+    "A documented note that 'truncated at first newline' really means 'split into one record per line' when a multi-line blob is piped to a single pub.",
+    "Nonzero exit on 'pub' with missing required positional args (distinct from --help)."
+  ],
+  "what_worked_well": [
+    "Bogus --at/--delay (xyz, 1.5, 99999999999, -5) all rejected with rc=1 and a single clean stderr reason line; broker stayed UP with ZERO raw bash errors in broker.log (F1 stays fixed).",
+    "Far-future --at 99999999999 rejected; deferred/ stayed empty even after 50 bogus pubs in a loop (F7 stays fixed).",
+    "Topic traversal '../../../tmp/PWNED' rejected; no /tmp/PWNED created (H1 stays fixed).",
+    "pub/sub --help print usage and exit 0 (F4 stays fixed).",
+    "NUL bytes stripped (abc\\x00def\\x00ghi -> abcdefghi), 8KB single line delivered intact, unterminated payload not delivered until a newline arrives -- EXACTLY as README/DEMO now predict (H2 doc honesty resolved).",
+    "Past --at 1 fired immediately; near-future --at NOW+5 parked a deferred file as expected.",
+    "flood_wedged.sh F4 explicitly asserts frame integrity under flood; passed twice (drops visible, max descendants 18/19 flat) -- H4 stable across runs.",
+    "Broker never crashed or hung under any malformed input I threw at it."
+  ],
+  "satisfaction_score": 9,
+  "would_use_again": true,
+  "challenge_fitness": "good",
+  "comparison_to_expectations": "Round-001 rated this pair 4/10 because the 'content-blind'/binary claims were overstated and bogus --at crashed the handler server-side while the publisher got rc=0. Round-002 is a clear, verifiable improvement: the docs now state the honest newline-delimited NUL-free-text contract and I observed exactly that behaviour; bogus --at is rejected at the boundary with nonzero rc and a clean reason, with no bash error spew in broker.log. The two remaining frictions are low-severity polish (a missing-args exit code and a slight 'truncated' wording mismatch), not honesty failures.",
+  "free_text": "Hammered the framing path as a scripter: embedded newlines (split into 3 clean records), NUL bytes (stripped to abcdefghi), 8KB single line (intact), unterminated payload (correctly withheld). Every doc claim in the 'delivery contract' section held up under cat -A inspection. The control-line hardening is real: 50 junk --at values in a loop left deferred/ empty and the broker up with a clean log. The only nits are an exit-code-0 on 'pub' with no args (inconsistent with the rc=1 on a bogus subcommand) and the 'truncated at first newline' wording slightly under-selling the friendlier per-line split I actually saw. Both are low severity. This challenge went from the lowest-rated pair to one I'd trust in a pipeline.",
+  "claim_audit": [
+    {
+      "claim": "embedded NUL bytes are stripped, a payload is truncated at its first newline, and a record with no trailing newline is not delivered until one arrives",
+      "verdict": "supported",
+      "evidence": "NUL: 'abc\\x00def\\x00ghi\\n' delivered as 'abcdefghi' (cat -A confirmed no ^@). No-newline: 'no-newline-tail' never appeared in subscriber output. Multi-line blob arrived as 3 separate intact lines (per-line split rather than literal one-line truncation -- friendlier than worded).",
+      "doc_location": "README.md:42-49 / DEMO.md:123-127"
+    },
+    {
+      "claim": "--at/--delay must be a non-negative integer within SHELLMUX_MAX_DEFER_S ... a malformed or far-future deadline returns a nonzero exit with a one-line reason instead of crashing a handler or parking a never-firing record",
+      "verdict": "supported",
+      "evidence": "--at xyz, --delay 1.5, --at 99999999999, --delay -5 all returned rc=1 with a single 'shellmux: bad --at/--delay ...' line; broker stayed UP; deferred/ empty after 50 junk pubs; broker.log had no unbound-variable/arithmetic errors.",
+      "doc_location": "README.md:52-56 / DEMO.md:134-139"
+    },
+    {
+      "claim": "Topic names are [A-Za-z0-9._-]+ (no ../ traversal that mkdirs outside the state dir)",
+      "verdict": "supported",
+      "evidence": "pub to '../../../tmp/PWNED' returned rc=1 'bad topic name'; /tmp/PWNED not created.",
+      "doc_location": "README.md:51-53 / DEMO.md:134-135"
+    }
+  ],
+  "citation_checks": [],
+  "proof_assessment": {
+    "race_window_clear": null,
+    "negative_control_present": null,
+    "missed": null,
+    "dup": null,
+    "trials": null,
+    "notes": "Not the focus of this challenge; did not run the chaos gate. flood_wedged F4 (frame integrity under flood) passed twice, which is the framing-adjacent proof I exercised."
+  },
+  "dismissal_survived": {
+    "dismissal": null,
+    "preempted": null,
+    "notes": "n/a for this product-phase framing challenge"
+  }
+}

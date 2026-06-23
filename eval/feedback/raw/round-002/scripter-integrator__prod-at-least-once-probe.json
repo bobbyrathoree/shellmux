@@ -1,0 +1,82 @@
+{
+  "session_id": "eval-scripter-integrator-prod-at-least-once-probe-r002",
+  "round": 2,
+  "phase": "product",
+  "product_version": "a82ae2a",
+  "persona": "scripter-integrator",
+  "challenge_id": "prod-at-least-once-probe",
+  "challenge_text": "Attempt to get a delivery guarantee: retry-until-acked, replay of missed messages for a subscriber that was briefly offline. Confirm the tool/docs are HONEST that this is punted, not silently broken. SUCCESS: docs make clear there is no at-least-once, no replay, no persistence beyond deferred files; the user is not misled.",
+  "completed": true,
+  "iterations": 4,
+  "time_taken_seconds": 360,
+  "capabilities_used": ["serve --unix", "sub --unix", "pub --unix", "pub --at/--delay", "ls/cat/find on state dir", "ps/pgrep", "tests/flood_wedged.sh"],
+  "capabilities_attempted_but_failed": ["retry-until-acked (does not exist)", "replay of messages missed while offline (does not exist)", "any persistent message store / outbox-per-subscriber (does not exist)"],
+  "errors_encountered": [],
+  "friction_points": [
+    {
+      "id": "fp-001",
+      "description": "No at-least-once, no acks, no retry, no replay. A subscriber that is offline during a live publish (no crash involved) permanently loses those messages. Confirmed black-box: killed the sub, published job-2/job-3 with zero subscribers (both returned rc=0 — a clean no-op), reconnected a fresh sub, and b.out was empty. Only post-reconnect publishes (job-4) were delivered. This is correct/expected for the design and the persona accepts it as a non-goal — flagged only as the observed limitation, not a bug.",
+      "severity": "low",
+      "category": "missing-feature",
+      "workaround": "Caller must build their own durability: tee the publish stream to a log and replay it on reconnect, or use --delay re-arm. No tool support.",
+      "is_new": false
+    },
+    {
+      "id": "fp-002",
+      "description": "Docs frame the no-retained-delivery limitation primarily around the CRASH scenario ('a deferred message whose deadline elapsed while the broker was down'). The far more common scripter scenario — a healthy broker, a subscriber that briefly disconnects/reconnects during normal operation and silently misses everything published in the gap — is only covered implicitly by the clause 'there is no retained delivery or replay ... a subscriber that reconnects later does not receive it'. A scripter scanning for 'what happens if my consumer restarts mid-stream' has to infer it. Honest, but the non-crash offline-gap case deserves one explicit sentence.",
+      "severity": "low",
+      "category": "claim-honesty",
+      "workaround": "Read the crash clause and generalize it; the 'no acks/at-least-once' non-goal bullet covers intent.",
+      "is_new": true
+    },
+    {
+      "id": "fp-003",
+      "description": "Transient orphan socat on rapid teardown. During the T2 churn (sub killed, two publishes to an empty topic, fresh sub connected, then broker killed with 'kill $BPID; pkill -P $BPID'), one socat fork-child survived (observed via pgrep after the run). The documented cleanup kills the broker's DIRECT children, but socat's per-connection fork children sit one level deeper and can outlive a fast kill window. A dedicated repeat probe (5x, sub connected + 0.8s settle before kill) was clean every time, so this is timing-dependent, not deterministic. Matters to a scripter who wires shellmux into cron and relies on a clean teardown.",
+      "severity": "medium",
+      "category": "ergonomics",
+      "workaround": "After kill $BPID; pkill -P $BPID, follow with 'pkill -f <statedir>' or 'pkill socat' to sweep deeper fork children; or give a short settle before killing.",
+      "is_new": true
+    },
+    {
+      "id": "fp-004",
+      "description": "DEMO.md Beat 2 starts 'serve &' and 'sub &' but shows NO teardown command at all — no kill/pkill line. A scripter copy-pasting the demo leaks a broker + socat acceptor + subscriber per run. Given fp-003 (teardown is non-trivial: deeper fork children survive a naive pkill -P), the demo should model the correct teardown it expects users to perform.",
+      "severity": "low",
+      "category": "onboarding",
+      "workaround": "User must know to kill the broker pid, pkill -P it, and sweep socat children themselves.",
+      "is_new": true
+    }
+  ],
+  "wished_for": [
+    "One explicit doc sentence on the non-crash case: 'a subscriber offline during a publish misses those messages with no replay on reconnect — even with the broker healthy'.",
+    "A documented, copy-pasteable teardown one-liner in DEMO.md that actually sweeps socat fork children.",
+    "Optional opt-in per-subscriber outbox replay (clearly out of scope, but the obvious next ask a scripter has)."
+  ],
+  "what_worked_well": [
+    "The honesty is genuinely strong: README delivery-contract section says verbatim 'there is no retained delivery or replay', and DEMO 'Why it's honest' lists 'No persistence, acks, wildcards' and 'At-most-once-modulo-crash, by design'. The observed behavior (offline sub loses messages, no replay) is exactly what the docs predict — I was not misled.",
+    "Publish to a topic with no live subscribers is a clean rc=0 no-op (job-2/job-3 returned 0, no error spew) — exactly the quiet-failure contract this persona wants.",
+    "On-disk state is exactly what's advertised: deferred/, outbox/, topics/<t>/sub_<pid>.fifo, wake.fifo, s.sock — globbable, no hidden message store (find for msg/queue/spool/replay/outbox turned up nothing but broker.log; outbox/ is empty staging, not a retained log).",
+    "All reachable round-001 fixes held: F1/F7/H1/F4/F6 all behave as claimed with clean one-line rejection reasons and nonzero rc; no raw bash errors in broker.log.",
+    "H4 flood_wedged is now stable: 3 consecutive runs each ~4s, pass=4 fail=0, max broker-descendants 17-18 (flat — the > $f & leak is gone), drops_* visible (~360-372)."
+  ],
+  "satisfaction_score": 8,
+  "would_use_again": true,
+  "challenge_fitness": "good",
+  "comparison_to_expectations": "Met expectations. The challenge SUCCESS condition (docs honest that at-least-once/replay/persistence are punted, user not misled) is satisfied. Round-001 was 8/10; round-2 holds at 8 — the regressions I could reach all stayed fixed and the core honesty is solid, but I docked nothing extra and added nothing extra: the new findings (non-crash offline-gap wording, transient socat orphan on fast teardown, missing demo teardown line) are all low/medium polish, not a reason to raise the score, and the offline-gap doc wording is a real if minor gap that keeps it from a 9.",
+  "free_text": "I came in trying to extract a delivery guarantee and failed in exactly the way the docs promise I would: offline subscribers miss messages with zero replay, publishes to no subscribers are clean no-ops, and there is no retained-message store on disk. That is the right outcome for this challenge — the tool does not pretend. The one honesty nit is that the loss story is told through the crash lens; the plain 'consumer restarted mid-stream' case is only covered by inference. Regression-wise everything reachable (F1, F7, H1, F4, F6, H4) stayed fixed. The only genuinely new operational friction is teardown: a fast kill+pkill -P can leave a socat fork-child behind (timing-dependent; a settled teardown was clean 5/5), and DEMO Beat 2 shows no teardown at all.",
+  "claim_audit": [
+    {"claim": "there is no retained delivery or replay", "verdict": "supported", "evidence": "killed sub, published 2 msgs to empty topic (rc=0 each), reconnected fresh sub -> b.out empty; only post-reconnect publish delivered. find for any message store -> nothing but broker.log.", "doc_location": "README.md:48-49"},
+    {"claim": "a subscriber that reconnects later does not receive it", "verdict": "supported", "evidence": "fresh sub after the gap received none of job-2/job-3.", "doc_location": "DEMO.md:130-133"},
+    {"claim": "No persistence, acks, wildcards, auth/TLS ... At-most-once-modulo-crash, by design", "verdict": "supported", "evidence": "no ack/retry mechanism exists; offline gap loses messages; on-disk state has no retained log.", "doc_location": "DEMO.md:128-129"},
+    {"claim": "a write to a topic with no/vanished subscribers is a clean no-op", "verdict": "supported", "evidence": "job-2/job-3 published with zero subscribers returned rc=0, no stderr spew in broker.log.", "doc_location": "README.md (delivery-contract / persona)"}
+  ],
+  "citation_checks": [],
+  "proof_assessment": {
+    "race_window_clear": null,
+    "negative_control_present": null,
+    "missed": null,
+    "dup": null,
+    "trials": null,
+    "notes": "Did not run the chaos gate for this challenge (at-least-once/replay does not touch the deadline-race proof). flood_wedged.sh was run 3x for the H4 regression: pass=4 fail=0 each, ~4s, max-descendants 17-18 (flat)."
+  },
+  "dismissal_survived": null
+}

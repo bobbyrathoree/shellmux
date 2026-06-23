@@ -1,0 +1,85 @@
+{
+  "session_id": "eval-adversarial-flooder-prod-wedged-flood-flat-procs-r002",
+  "round": 2,
+  "phase": "product",
+  "product_version": "a82ae2a",
+  "persona": "adversarial-flooder",
+  "challenge_id": "prod-wedged-flood-flat-procs",
+  "challenge_text": "With three subscribers (one wedged via 'socat ... | (read x; sleep 999)'), flood the topic. Confirm the two healthy subscribers stay real-time, drops_<wedged> rises, and the publisher's descendant process count stays flat over time (no per-message process leak). May also run tests/flood_wedged.sh.",
+  "completed": true,
+  "iterations": 6,
+  "time_taken_seconds": 0,
+  "capabilities_used": ["serve over unix socket", "sub via client", "wedged sub via sub|(read;sleep)", "held-open PUB streaming", "pub subcommand", "ps descendant counting", "cat drops_*", "ls topics", "tests/flood_wedged.sh x3"],
+  "capabilities_attempted_but_failed": ["raw socat stream WITHOUT a PUB header silently does nothing (no error, no delivery) — expected, my mistake, but the broker gives zero feedback that an unframed stream was ignored"],
+  "errors_encountered": [
+    {"operation": "stream 3000 msgs over one held-open PUB socat with 0.5s trailing sleep, 3 subs (1 wedged)", "error": "healthy subs A and B each received only 897/3000; NO drops_* file created for them", "context": "loss was NOT isolated to the wedged sub; healthy subs silently lost ~70% with no counter"},
+    {"operation": "stream 2000 msgs, TWO healthy subs, NO wedged peer at all, 0.5s trailing sleep", "error": "A=1090/2000 B=1089/2000, zero drops_* files", "context": "rules out the wedge as cause; pure publisher-side burst truncation, silent"},
+    {"operation": "stream 2000, two healthy subs, compare which messages each got", "error": "A and B both received the IDENTICAL contiguous prefix m-1..m-1144 then both stopped (common=1144, A-only=0, B-only=0)", "context": "proves loss is publisher-ingest/disconnect-side, not per-sub drainer ring; the broker simply never fanned out the tail"},
+    {"operation": "same stream but with 5s trailing hold before socat closes", "error": "none — A got full 2000/2000", "context": "confirms root cause = publisher socat connection closes before broker finishes ingesting the buffered tail; the undelivered tail is then dropped silently"}
+  ],
+  "friction_points": [
+    {
+      "id": "fp-001",
+      "description": "The held-open streaming PUB path (the documented 'volume' path) silently drops the publisher's unflushed tail when the publisher disconnects before the broker has finished ingesting/fanning-out the in-flight burst. Streaming 2000-3000 lines then closing the socket after a 0.5s trailing sleep delivered only ~900-1150 to EVERY subscriber (even with NO wedged peer); both subs got the identical contiguous prefix and then nothing. Adding a 5s trailing hold delivered 2000/2000. There is NO drops_* counter, NO broker.log entry, and NO publisher error for this loss. This directly contradicts DEMO.md Beat 3 ('the two healthy subscribers get the ENTIRE flood at full speed') and the 'Why it's honest' bullet ('lossy, but visible — never silent'). For a flooder this is the headline: the volume path loses the majority of a burst, silently, on the happy path.",
+      "severity": "high",
+      "category": "claim-honesty",
+      "workaround": "Keep the publisher connection open with a long trailing sleep proportional to burst size (5s worked for 2000), or pace publishes (~1ms/msg delivered 500/500). Neither is documented.",
+      "is_new": true
+    },
+    {
+      "id": "fp-002",
+      "description": "drops_$pid does not account for this burst/disconnect loss at all. The counter only ticks for the specific wedged-subscriber ring-overflow path (canonical flood_wedged shows drops=~370-386). When the loss is publisher-disconnect-truncation, drops_* stays absent/empty even as the majority of messages vanish. So the claim 'exposed via drops_$pid' / 'never silent' is only true for one loss mode; a second, easy-to-hit loss mode is entirely invisible to introspection.",
+      "severity": "high",
+      "category": "error-handling",
+      "workaround": "None observable as a user — there is no signal at all.",
+      "is_new": true
+    },
+    {
+      "id": "fp-003",
+      "description": "An unframed raw socat stream (lines without a leading 'PUB <topic>' header) is silently swallowed: no delivery, no error to the writer, nothing in broker.log. A hostile or fat-fingered client gets zero feedback that its stream was ignored. Minor vs the data-loss findings, but it is silence-on-malformed-control, which the docs claim is rejected at the boundary.",
+      "severity": "low",
+      "category": "error-handling",
+      "workaround": "Always send 'PUB <topic>\\n' first; verify via subscriber output.",
+      "is_new": true
+    }
+  ],
+  "wished_for": [
+    "A per-topic or per-connection 'records accepted vs fanned-out' counter so burst-truncation loss is visible, not just the wedged-sub ring drops.",
+    "Documented guidance that a streaming publisher must hold the connection open until the broker drains (or a server-side flush/ack on PUB close).",
+    "An explicit nonzero/log signal when a held-open stream disconnects with undelivered buffered records."
+  ],
+  "what_worked_well": [
+    "The core challenge claim holds for the wedged/paced scenario: tests/flood_wedged.sh passed 4/4 on all 3 runs (1000/1000 to healthy subs, drops ~370-386 visible on the wedged peer, max broker-descendants ~18-19 — FLAT). The > $f & process-leak bug is genuinely gone.",
+    "H4 cold-start hang is fixed: flood_wedged.sh ran stably 3x, no >120s hang, each ~a few seconds.",
+    "Process count stayed flat (~16-23) across two 1500-msg flood waves in my own harness — no per-message process accumulation.",
+    "F2 doc fix verified: cat drops_* on a healthy topic prints 'no drops' cleanly via the 2>/dev/null || echo pattern.",
+    "broker.log stayed clean during normal publish (no raw bash errors).",
+    "With a sufficient trailing hold, healthy subs DO get the entire flood (2000/2000) — the fan-out path itself is correct; the bug is the disconnect race."
+  ],
+  "satisfaction_score": 6,
+  "would_use_again": true,
+  "challenge_fitness": "good",
+  "comparison_to_expectations": "The round-001 process-leak and flakiness concerns are genuinely resolved (flat procs, stable 3x). But pushing the flood harder than the staged test exposed a new and arguably bigger honesty gap: the documented volume/streaming path silently loses the majority of a burst when the publisher disconnects promptly, with no counter and no log — directly against the 'never silent' claim. Net: the specific regressions improved, but a new high-severity honesty gap in the same backpressure story keeps the score flat at 6.",
+  "free_text": "Wedged-peer isolation and flat process count are solid and the canonical test is honest about THAT mode. My attack was to flood via the held-open stream the docs call 'the volume path' and disconnect like any real script would. Result: even with zero wedged subscribers, two healthy subs got an identical contiguous prefix (m-1..m-1144 of 2000) and then silence — drops_* never created, broker.log empty, publisher rc fine. A 5s trailing hold fixed it, proving it is a publisher-disconnect-vs-ingest race, not fan-out. The docs promise 'healthy subs get the ENTIRE flood at full speed' and 'lossy but visible — never silent'; both are false for the natural fast-publisher-then-exit pattern. Recommend either documenting the hold-open requirement loudly or adding an accepted-vs-delivered counter so the loss is visible.",
+  "claim_audit": [
+    {"claim": "the two healthy subscribers get the entire flood at full speed", "verdict": "overstated", "evidence": "Stream of 2000 with two healthy subs, no wedge, 0.5s trailing close -> A=1090, B=1089 of 2000; both got identical contiguous prefix then stopped. Only true if publisher holds connection open ~5s after the burst.", "doc_location": "DEMO.md:71-73"},
+    {"claim": "lossy, but visible — never silent ... exposed via drops_$pid", "verdict": "overstated", "evidence": "Publisher-disconnect burst-truncation loss produced NO drops_* file and NO broker.log entry across 3000/2000/2000-msg runs; the loss is entirely silent. drops_$pid only tracks the wedged-sub ring overflow.", "doc_location": "DEMO.md:113-116"},
+    {"claim": "the publisher's process count stays flat (~15)", "verdict": "supported", "evidence": "flood_wedged.sh max_descendants=18/18/19 across 3 runs; my own 2-wave flood held at 16-23. No accumulation.", "doc_location": "DEMO.md:73-74"},
+    {"claim": "cat drops_<wedged> ticks up (lossy, but visible)", "verdict": "supported", "evidence": "flood_wedged.sh reported sum drops_*=386/368/369 on the wedged peer across 3 runs; the wedged-overflow mode IS visible.", "doc_location": "DEMO.md:70-72"},
+    {"claim": "Hostile control input is rejected at the boundary, not silently mishandled", "verdict": "overstated", "evidence": "An unframed socat stream (no PUB header) is silently ignored: no delivery, no error, nothing in broker.log. Not data corruption, but it is a silently-mishandled control stream.", "doc_location": "README.md:51-52"}
+  ],
+  "citation_checks": [],
+  "proof_assessment": {
+    "race_window_clear": true,
+    "negative_control_present": true,
+    "missed": null,
+    "dup": null,
+    "trials": null,
+    "notes": "Did not re-run the N=5000 deadline chaos gate this round — out of scope for the wedged-flood challenge. The flood_wedged.sh suite (the relevant proof for this challenge) passed 4/4 on all 3 runs with a leaky must-fail control documented; F1/F2/F3 of that suite are sound for the paced/wedged scenario."
+  },
+  "dismissal_survived": {
+    "dismissal": "the bounded ring makes loss visible so backpressure is honest",
+    "preempted": false,
+    "notes": "The bounded-ring/drops_$pid story covers the wedged-sub overflow mode only. A second, easier loss mode — publisher disconnects before the broker drains its buffered burst — drops the majority of records silently, with no drops_* and no log. The 'never silent' framing does not survive this."
+  }
+}

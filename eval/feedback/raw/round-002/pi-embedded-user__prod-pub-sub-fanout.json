@@ -1,0 +1,66 @@
+{
+  "session_id": "eval-pi-embedded-user-prod-pub-sub-fanout-r002",
+  "round": 2,
+  "phase": "product",
+  "product_version": "a82ae2a",
+  "persona": "pi-embedded-user",
+  "challenge_id": "prod-pub-sub-fanout",
+  "challenge_text": "Start the broker. Subscribe two clients to a topic, leave a third on a different topic. Publish one message. Confirm exactly the two reach it and the third does not. SUCCESS: both same-topic subs receive intact; off-topic sub receives nothing; no error output.",
+  "completed": true,
+  "iterations": 4,
+  "time_taken_seconds": 95,
+  "capabilities_used": ["serve --unix", "sub", "pub", "ls topics/", "cat sub output", "ps idle-cpu sample", "od -c byte inspection", "cat drops_*", "sub/pub --help"],
+  "capabilities_attempted_but_failed": [],
+  "errors_encountered": [],
+  "friction_points": [
+    {
+      "id": "fp-001",
+      "description": "Docs (README.md:47-48 and DEMO.md:123-126) state the delivery contract as 'a payload is truncated at its first newline'. Observed behavior contradicts this: a single `printf 'first\\nsecond\\nthird\\n' | pub <dir> weather` delivers ALL THREE lines to each subscriber as three separate records (verified by od -c: bytes are 'first\\nsecond\\nthird\\n', wc -l = 3). `pub` drains its entire stdin and forwards every newline-terminated line as its own record; it does not truncate at the first newline. The truncation claim describes per-record framing semantics but reads, to a user, as a payload-size limit on a publish — which is false. For my use case (a sensor piping a multi-line reading) this is actually convenient, but the doc predicts the wrong observable behavior, which is a claim-honesty gap.",
+      "severity": "medium",
+      "category": "claim-honesty",
+      "workaround": "None needed functionally; just don't trust the 'truncated at first newline' wording — multi-line stdin is fanned out line-by-line, not clipped.",
+      "is_new": true
+    },
+    {
+      "id": "fp-002",
+      "description": "Empty topic directories are not reaped. After all three subscribers exit (0 sub_*.fifo remain under topics/weather and topics/traffic), the topic directories themselves persist under topics/. This is bounded by distinct-topic count (not by message volume), so it is not a leak in the unbounded sense my persona worries about, and neither README nor DEMO promises topic-dir reaping. Noting it because an air-gapped box running for months with churning topic names would accumulate empty dirs.",
+      "severity": "low",
+      "category": "ergonomics",
+      "workaround": "Periodically rmdir empty topic dirs out-of-band, or restart with a fresh state dir.",
+      "is_new": true
+    }
+  ],
+  "wished_for": [
+    "A one-line note in DEMO/README that `pub` forwards EACH line of stdin as a separate record (the multi-line behavior I observed), so the 'truncated at first newline' wording isn't read as a payload cap.",
+    "An optional empty-topic-dir reaper (or a doc line saying topic dirs are intentionally sticky) for long-running air-gapped deployments."
+  ],
+  "what_worked_well": [
+    "Core fan-out challenge passed cleanly first try: two weather subs both received 'sunny-22C' intact, the traffic sub received nothing, pub rc=0, all subscriber stderr empty, broker.log empty.",
+    "Idle CPU was a flat 0% across two 5s ps samples of all socat/sched/shellmux processes — exactly what my persona requires for battery/idle-power.",
+    "Forget-on-death worked: after killing subs, 0 sub_*.fifo remained under the topic.",
+    "NUL stripping works as documented: printf 'A\\x00B\\n' arrived as 'AB'.",
+    "All round-001 regressions reachable from this challenge stayed fixed (F1/F4/F7/H1/F2) with clean broker.log."
+  ],
+  "satisfaction_score": 8,
+  "would_use_again": true,
+  "challenge_fitness": "good",
+  "comparison_to_expectations": "Round-001 scored 9/10. The functional behavior is at least as good (fan-out, isolation, 0% idle CPU, all prior fixes holding). I am dropping one point because re-reading the hardened delivery-contract docs as a careful user, the 'truncated at first newline' claim does not match the observed multi-line publish behavior — a small but real honesty gap introduced/sharpened in the very docs that were tightened to be honest. That is exactly the kind of thing my persona scrutinizes.",
+  "free_text": "Setup via docker run was frictionless. Challenge succeeded on first attempt with no error output anywhere. Regression sweep (run black-box, never reading src/): F4 sub/pub --help both print usage and exit 0; F1 'pub --at xyz' and 'pub --delay 1.5' both rejected with rc=1 and a one-line reason, broker.log clean (no unbound-variable / arithmetic / value-too-great errors); F7 'pub --at 99999999999' rejected rc=1 and deferred/ stayed empty; H1 'pub ../../../tmp/PWNED' rejected rc=1 and /tmp/PWNED was NOT created (verified ls); F2 'cat drops_* 2>/dev/null || echo no drops' prints 'no drops' on a healthy topic. The one new dent is the newline-truncation wording (fp-001).",
+  "claim_audit": [
+    {"claim": "a payload is truncated at its first newline", "verdict": "overstated", "evidence": "Single `pub` with stdin 'first\\nsecond\\nthird\\n' delivered all three lines as three records to each sub (od -c confirmed full bytes, wc -l=3). pub forwards every line; it does not truncate the payload at the first newline.", "doc_location": "README.md:47"},
+    {"claim": "Topic names must be [A-Za-z0-9._-]+ with no leading dot so they cannot be a ../ traversal that mkdirs outside the state dir", "verdict": "supported", "evidence": "pub <dir> '../../../tmp/PWNED' returned rc=1 'bad topic name' and /tmp/PWNED was not created.", "doc_location": "README.md:52-54"},
+    {"claim": "--at/--delay must be a non-negative integer within SHELLMUX_MAX_DEFER_S or returns nonzero with a one-line reason", "verdict": "supported", "evidence": "--at xyz, --delay 1.5, --at 99999999999 each returned rc=1 with a one-line reason; deferred/ stayed empty; broker.log clean.", "doc_location": "README.md:52-56"},
+    {"claim": "~0% idle CPU", "verdict": "supported", "evidence": "Two 5s ps samples of socat/sched/shellmux processes summed to 0% pcpu while idle with 3 subscribers connected.", "doc_location": "README.md:5"},
+    {"claim": "embedded NUL bytes are stripped", "verdict": "supported", "evidence": "printf 'A\\x00B\\n' delivered as 'AB' (od -c).", "doc_location": "README.md:47"}
+  ],
+  "citation_checks": [],
+  "proof_assessment": {
+    "race_window_clear": null,
+    "negative_control_present": null,
+    "missed": null,
+    "dup": null,
+    "trials": null,
+    "notes": "This challenge (fan-out / topic routing) does not exercise the deadline-scheduler chaos proof; the heavy N=5000 gate was out of scope for this pair and not run. The deferred-message path was only touched negatively (rejection of bad --at/--delay)."
+  },
+  "dismissal_survived": null
+}

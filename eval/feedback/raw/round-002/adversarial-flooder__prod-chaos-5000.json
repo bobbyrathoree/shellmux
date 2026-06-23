@@ -1,0 +1,105 @@
+{
+  "session_id": "eval-adversarial-flooder-prod-chaos-5000-r002",
+  "round": 2,
+  "phase": "product",
+  "product_version": "a82ae2a",
+  "persona": "adversarial-flooder",
+  "challenge_id": "prod-chaos-5000",
+  "challenge_text": "Execute tests/chaos_deadline.sh and confirm it reports missed=0 dup=0 over N>=5000 adversarial-timing trials, AND that its negative-control broken variants are shown to fail. SUCCESS requires both: correct variant missed=0 dup=0 over >=5000, and negative controls caught (missed>0 or dup>0).",
+  "completed": true,
+  "iterations": 5,
+  "time_taken_seconds": 600,
+  "capabilities_used": [
+    "tests/chaos_deadline.sh full N=5000 gate",
+    "serve/sub/pub over unix socket",
+    "--at / --delay control input",
+    "topic-name traversal attempt",
+    "--help on sub and pub",
+    "multiline/NUL/no-newline payload framing probe",
+    "tests/flood_wedged.sh x3 (backpressure leak check)",
+    "abandoned-half-open-subscriber resource probe",
+    "broker kill -9 mid-deferred (crash semantics)",
+    "ls/cat filesystem introspection"
+  ],
+  "capabilities_attempted_but_failed": [],
+  "errors_encountered": [
+    {
+      "operation": "30 rapid serial pubs to fresh topics in one tight loop right after a flood/kill phase",
+      "error": "only 4 of 30 topic dirs appeared in that run",
+      "context": "Could NOT reproduce in isolation: a clean run of 8 fresh-topic pubs created 8/8 dirs at rc=0. The 4/30 was a measurement artifact of my own back-to-back script (broker under teardown), not a shellmux fault. No bug filed."
+    }
+  ],
+  "friction_points": [
+    {
+      "id": "fp-001",
+      "description": "README/DEMO say 'a payload is truncated at its first newline', but a single `pub` of `L1\\nL2\\nL3\\n` is delivered to the subscriber as THREE separate records (L1, L2, L3), not one truncated record. The observable contract is line-SPLITTING (each newline-terminated line becomes its own record), not truncation. A flooder piping a multi-line blob silently gets it fanned out as N records, which contradicts the stated 'truncated at first newline' wording. Behavior is reasonable; the DOC sentence is wrong/misleading.",
+      "severity": "low",
+      "category": "claim-honesty",
+      "workaround": "Send one record per pub; or read the wording as 'each line is one record'.",
+      "is_new": true
+    }
+  ],
+  "wished_for": [
+    "A one-word fix to the README/DEMO 'truncated at its first newline' line so it matches the observed line-splitting behavior.",
+    "A 'sub ready' signal so the flood harness need not hardcode a sleep (acknowledged punt F5, still wished)."
+  ],
+  "what_worked_well": [
+    "Full N=5000 gate: missed=0 dup=0 ontime=5000 total_fires=5000; idle CPU 0.00%.",
+    "All 3 must-fail negative controls fail on their predicted axis: naivesleep missed=120/120, drainfirst missed=120/120, nocommit dup=1770. The proof is genuinely falsifiable.",
+    "flood_wedged.sh ran 3x with zero cold-start hang; healthy subs got 1000/1000, drops visible (359/387/360), broker descendants flat (17/19/21) vs the ~1300 the leaky control produces. The old `> $f &` leak is gone.",
+    "15 abandoned half-open subscribers killed with SIGKILL: all 15 FIFOs reaped to 0 and broker children returned to baseline. Forget-on-death survives hard kill.",
+    "deferred/ file survived broker kill -9 (crash recovery / at-most-once-modulo-crash holds).",
+    "Hostile control input rejected at the boundary with nonzero rc and a clean one-line reason, no raw bash errors in broker.log."
+  ],
+  "satisfaction_score": 9,
+  "would_use_again": true,
+  "challenge_fitness": "good",
+  "comparison_to_expectations": "Round-001 was 8/10 with the flaky flood cold-start and a couple of doc gaps as the main complaints. This round the flood test is stable across 3 runs, every round-001 issue I could reach is resolved, and the headline 5000-trial proof plus all 3 controls held under direct scrutiny. The only thing I could find to ding is a one-line doc wording mismatch on framing. Up to 9/10.",
+  "free_text": "I came to break the headline claim and could not. The N=5000 gate fired 0 missed / 0 duplicate, idle CPU read 0.00%, and crucially the three deliberately-broken schedulers all failed on exactly their predicted axis (two miss, one dups 1770) — so the proof is falsifiable theater-free. I then attacked the backpressure leak (3x flood, descendants flat ~17-21, drops visible), abandoned 15 half-open subs and SIGKILLed them (all FIFOs reaped, no proc/fd accumulation), and killed the broker mid-deferred (the deferred file survived). Every round-001 regression I could reach is resolved. The single new nit is documentation-only: docs say payloads are 'truncated at first newline' but the broker actually line-splits a multi-line pub into multiple records — harmless behavior, wrong sentence.",
+  "claim_audit": [
+    {
+      "claim": "over N=5000 adversarial-timing trials the deadline scheduler fires 0 missed / 0 duplicate at ~0% idle CPU",
+      "verdict": "supported",
+      "evidence": "Ran `bash tests/chaos_deadline.sh` to completion: '[1/5] CORRECT missed=0 dup=0 ontime=5000 total_fires=5000 PASS' and '[5/5] idle CPU = 0.00%'.",
+      "doc_location": "README.md:13-18"
+    },
+    {
+      "claim": "the proof survives three must-fail negative controls",
+      "verdict": "supported",
+      "evidence": "[2/5] naivesleep missed=120/120, [3/5] drainfirst missed=120/120, [4/5] nocommit dup=1770 — each failed on its predicted axis and the harness reported PASS (control failed as required).",
+      "doc_location": "DEMO.md:33-37"
+    },
+    {
+      "claim": "a payload is truncated at its first newline",
+      "verdict": "overstated",
+      "evidence": "Single pub of 'L1\\nL2\\nL3\\n' delivered as 3 separate received lines (wc -l = 3), not 1 truncated record. Observed contract is line-splitting, not truncation.",
+      "doc_location": "README.md:47"
+    },
+    {
+      "claim": "the publisher's process count stays flat (~15)",
+      "verdict": "supported",
+      "evidence": "flood_wedged.sh F3 max broker-descendants = 17 / 19 / 21 across 3 runs; control balloons to ~1300.",
+      "doc_location": "DEMO.md:71-74"
+    },
+    {
+      "claim": "Topic names are [A-Za-z0-9._-] (no ../ traversal that mkdirs outside the state dir)",
+      "verdict": "supported",
+      "evidence": "`pub ../../../tmp/PWNED` -> rc=1 'bad topic name'; /tmp/PWNED not created; only 'weather' in topics/.",
+      "doc_location": "DEMO.md:134-136"
+    }
+  ],
+  "citation_checks": [],
+  "proof_assessment": {
+    "race_window_clear": true,
+    "negative_control_present": true,
+    "missed": 0,
+    "dup": 0,
+    "trials": 5000,
+    "notes": "Full gate run live in the pinned container (bash 5.2.15). CORRECT: missed=0 dup=0 ontime=5000 total_fires=5000. Controls: naivesleep missed=120/120, drainfirst missed=120/120, nocommit dup=1770. Idle CPU 0.00% over 5s sample. SUCCESS criteria (both halves) met."
+  },
+  "dismissal_survived": {
+    "dismissal": "this is just sleep $((next-now)) and the controls are rigged",
+    "preempted": true,
+    "notes": "The naivesleep control IS sleep-without-wake and it misses 120/120 — so the wake path is doing load-bearing work, not theater. drainfirst (honker lost-wakeup ordering) and nocommit (no mv commit point) each fail on their own distinct axis, which a single rigged threshold could not produce."
+  }
+}
