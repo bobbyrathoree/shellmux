@@ -19,6 +19,7 @@ declare -a SUITES=(
   "flood_wedged.sh"     # M3: bounded fan-out, ps flat, drops visible + leaky control
   "deferred_pub.sh"     # M3b: --delay/--at fire at the deadline + fire-now control
   "introspection.sh"    # M4: ls/cat state + GC reaper (preserves live state)
+  "input_validation.sh" # R1: reject hostile --at/--delay + topic names + NO_VALIDATE control
 )
 
 pass=0 fail=0

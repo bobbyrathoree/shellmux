@@ -19,7 +19,7 @@ and tested. Reproduce from a clean checkout:
 
 ```bash
 docker build -t shellmux-dev .
-docker run --rm -v "$PWD:/work" -w /work shellmux-dev bash tests/run_all.sh   # all 7 suites
+docker run --rm -v "$PWD:/work" -w /work shellmux-dev bash tests/run_all.sh   # all 8 suites
 # fast pass (~90s):  ... -e N_MAIN=400 bash tests/run_all.sh
 ```
 
@@ -36,6 +36,24 @@ fork-per-connection. The earned contribution is **race-free, zero-busy-spin dead
 It is **not** a competitor to Mosquitto / NATS / Redis / ZeroMQ on throughput, persistence, or
 clustering, and it is **not** privacy/E2EE (the host sees every byte — "content-blind" is a
 simplicity note, not a security feature). See `docs/prior-art.md`.
+
+### The delivery contract (read this before you pipe binary at it)
+
+A record is **one newline-delimited line of NUL-free text**. The broker parses *only* the one-line
+control header (`SUB <topic>` / `PUB <topic> [--at|--delay]`) and never inspects your payload — but
+delivery is line-oriented, so: embedded NUL bytes are stripped, a payload is truncated at its first
+newline, and a record with **no trailing newline is not delivered** until one arrives. This is the
+honest contract — text records, one per line — not arbitrary-binary transport. (Crash semantics are
+**at-most-once-modulo-crash**: a deferred message whose deadline elapsed while the broker was down
+fires immediately on restart into whoever is connected *then*; there is no retained delivery or
+replay. See [`DEMO.md`](./DEMO.md) "Why it's honest".)
+
+Hostile control input is **rejected at the boundary**, not silently mishandled: a topic name must be
+`[A-Za-z0-9._-]+` with no leading dot (so it can't be a `../` traversal that `mkdir`s outside the
+state dir), and `--at`/`--delay` must be a non-negative integer within `SHELLMUX_MAX_DEFER_S`
+(default 1 year) — a malformed or far-future deadline returns a nonzero exit with a one-line reason
+instead of crashing a handler or parking a never-firing record. Proven by `tests/input_validation.sh`
+with a `SHELLMUX_NO_VALIDATE=1` must-fail control.
 
 ## Repo map
 
@@ -60,7 +78,7 @@ DEMO.md                    ← the 1-page demo script (what to run, what the jud
 HANDOFF.md                 ← current state, decisions, dead-ends (the project's brain)
 src/
   sched.sh                 ← the deadline scheduler (THE contribution), 167 lines
-  shellmux                 ← the broker: serve/sub/pub + fan-out + drainer + reaper, 374 lines
+  shellmux                 ← the broker: serve/sub/pub + fan-out + drainer + reaper + input validation, 452 lines
 tests/
   chaos_deadline.sh        ← M0 GATE: 0 missed/0 dup over N≥5000 + 3 must-fail controls
   smoke.sh                 ← M0 tracer smoke
@@ -69,6 +87,7 @@ tests/
   flood_wedged.sh          ← M3 bounded fan-out (ps flat) + leaky must-fail control
   deferred_pub.sh          ← M3b --delay/--at fire at the deadline + fire-now control
   introspection.sh         ← M4 ls/cat state + GC reaper
+  input_validation.sh      ← R1 reject hostile --at/--delay + topic names + NO_VALIDATE control
   bench.sh                 ← throughput + footprint
   run_all.sh               ← run every suite
   negative/                ← the deliberately-broken must-fail control schedulers

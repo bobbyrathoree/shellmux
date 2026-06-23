@@ -1,0 +1,80 @@
+{
+  "persona": "pi-embedded-user",
+  "challenge_id": "prod-crash-recovery",
+  "session_id": "eval-pi-embedded-user-prod-crash-recovery-r001",
+  "completed": true,
+  "satisfaction_score": 7,
+  "challenge_fitness": "good",
+  "would_use_again": true,
+  "capabilities_used": [
+    "serve",
+    "sub",
+    "pub --delay",
+    "deferred/ filesystem introspection (ls)",
+    "kill -9 crash + restart on same state dir",
+    "scheduler idle-CPU sampling via /proc/<sched>/stat",
+    "shipped tests/crash_recovery.sh"
+  ],
+  "capabilities_attempted_but_failed": [],
+  "iterations": 4,
+  "evidence_log": [
+    "FUTURE-DEADLINE CRASH (PASS): scheduled `printf 'BILGE-PUMP-ON' | pub alarms --delay 8`, deferred file `1782178999282.20548520` (20 bytes) appeared in deferred/. Did `pkill -9 -P $BROKER; kill -9 $BROKER; pkill -9 -f sched.sh` ~5.5s in. After kill: `ls deferred/` still shows the file (deferred-file-count-after-crash=1). Restarted `serve` on SAME state dir; deferred file still present; connected a FRESH sub; after the deadline `sub2.out` => `BILGE-PUMP-ON`, fired-on-fresh-sub-after-reboot=1, deferred/ empty. Exactly-once across the crash.",
+    "OVERDUE-AFTER-POWEROFF (SILENT LOSS): scheduled `OVERDUE-MSG --delay 5`, killed the whole tree ~1s in, then stayed 'powered off' (sleep 8s) so the deadline (1782179042364) passed while down (now=1782179047374). Restarted broker, connected sub, waited 5s: `sub.out` EMPTY, overdue-fire-count=0, but deferred-remaining-after-rearm=0 (file CONSUMED). The scheduler fired the overdue record on first scan into a topic with no subscriber -> message gone.",
+    "OVERDUE RACE CONFIRMED: planted an overdue deferred file (deadline 3s in the past), rebooted broker, launched sub as fast as possible, tight-polled every 0.5s: t+1 deferred_remaining=1, t+2 deferred_remaining=0 (consumed on first scan), sub_got=0 for all 20 polls (10s). final sub.out empty. RESULT overdue-fire-count=0. Confirms overdue records fire before a reconnecting sub registers and are lost (no retained delivery).",
+    "TIMING + IDLE CPU POST-REBOOT (PASS): `NAV-LIGHT --delay 12`, killed at deadline-10s, deferred `1782179154934.52313154` survived. Rebooted, connected sub, sampled scheduler pid 60 via /proc/60/stat utime+stime over a 4s idle window: ticks=0, CLK_TCK=100 => ~0.00% CPU. Message fired exactly once (fire-count=1) when the original deadline arrived; deferred/ drained. Re-arm does not busy-spin.",
+    "SHIPPED SUITE: `tests/crash_recovery.sh` => `ok R1 deferred re-arm: both records fire after kill -9 + restart`, `ok R2 outbox recovery`, `ok R2' control (must fail): no-recover variant loses the stranded outbox file`, `ok R3 at-most-once: R3 fired 1 time(s) ... dup <= 1`; result pass=4 fail=0, EXIT=0. The must-fail negative control (R2') does fail as required.",
+    "DOC AUDIT: `grep -niE 'overdue|in the past|retained|reconnect|connect before' README.md DEMO.md` => (no hits). Only crash framing is DEMO.md:117 'At-most-once-modulo-crash, by design.' and README:17 'crash recovery ... implemented and tested'. The overdue-on-reboot silent-loss case is undocumented.",
+    "Box: GNU bash 5.2.15 aarch64 (container, faithful to a bash>=4 Pi); fractional read -t / sub-second wake available."
+  ],
+  "what_worked_well": [
+    "Deferred file survives a hard kill -9 of the whole process tree and persists on disk as a plain `<run_at_ms>.<seq>` file I can see with `ls deferred/` -- exactly the filesystem-is-the-interface promise.",
+    "Restart on the same state dir re-arms the scheduler from deferred/ with no config and no manual step; the future-deadline message fired exactly once at the right time on a fresh subscriber.",
+    "Re-armed scheduler is genuinely idle: 0 CPU ticks over a 4s idle window (~0.00%) via /proc/<sched>/stat. Critical for battery life on a boat -- this claim held under my own measurement, not just the doc.",
+    "Shipped tests/crash_recovery.sh passes 4/4 AND its must-fail control (R2' no-recover variant) actually fails -- the deadline-proof discipline (working negative control) is honored on the crash path, not just the chaos test.",
+    "at-most-once held: R3 fired exactly 1 time across the crash window (dup<=1); my own future-deadline run also fired exactly once."
+  ],
+  "wished_for": [
+    "Documented behavior for an OVERDUE deferred message on reboot (deadline already past during downtime) -- the realistic boat case. Either a one-line note in DEMO.md/README that overdue records fire-on-rearm into currently-connected subs only and are dropped if none are attached, OR a short grace/retained window so a reconnecting subscriber catches the boot-time fire.",
+    "A startup log line on re-arm: broker2.log was completely empty after restart even though the scheduler consumed an overdue file. A single `re-armed N deferred record(s)` line would let me confirm recovery happened without poll-racing `ls deferred/`.",
+    "A documented note that subscribers must reconnect FAST after reboot (or a reconnect/retry helper), since deferred fires have no retention."
+  ],
+  "friction_points": [
+    {
+      "id": "overdue-silent-loss",
+      "category": "correctness/docs",
+      "severity": "high",
+      "description": "A deferred message whose deadline passes WHILE the box is powered off is silently lost on reboot. The scheduler correctly survives the crash and re-arms, but on the first scan it immediately fires the now-overdue record into the topic; with no subscriber yet reconnected and no retained delivery, the message vanishes. Observed: deferred-remaining=0 (consumed) with fire-count=0 over 10s on a fresh sub. This is the COMMON case for an embedded box (power off longer than the delay), yet README/DEMO document only 'at-most-once-modulo-crash, by design' and never mention the overdue/no-subscriber drop. A Pi user reasonably expects a power-blip alarm to fire on boot.",
+      "evidence": "pi-crash-overdue: deadline 1782179042364 passed during 8s downtime; after reboot+sub, sub.out empty, overdue-fire-count=0, deferred-remaining-after-rearm=0. pi-crash-overdue2 tight-poll: t+1 deferred_remaining=1 -> t+2 deferred_remaining=0, sub_got=0 across all 20 polls.",
+      "workaround": "None as a user. Only mitigation is to have a subscriber permanently attached and reconnect instantly on boot AND hope you win the race against the first scheduler scan; not reliable. Effectively: overdue deferred messages are unrecoverable."
+    },
+    {
+      "id": "empty-rearm-log",
+      "category": "observability",
+      "severity": "low",
+      "description": "After restart, broker2.log was empty even though the scheduler re-armed and consumed deferred files. No user-visible signal that recovery occurred; I had to poll `ls deferred/` and infer it from the file disappearing.",
+      "evidence": "pi-crash-timing-cpu & pi-crash-recovery: `--- broker2.log ---` printed `[end]` with nothing between, while deferred/ drained and the message fired.",
+      "workaround": "Poll `ls deferred/` before/after restart to infer re-arm; works but is indirect."
+    },
+    {
+      "id": "doc-overstates-crash-recovery",
+      "category": "docs/honesty",
+      "severity": "medium",
+      "description": "README:17 lists 'crash recovery ... implemented and tested' and DEMO.md:117 says 'At-most-once-modulo-crash, by design' with no caveat about the overdue/no-subscriber edge. The honesty section (DEMO.md:104-121) is otherwise admirably blunt about losses, which makes this omission stand out -- the one lossy crash case a Pi user will actually hit is the one not called out.",
+      "evidence": "grep -niE 'overdue|retained|reconnect|connect before' README.md DEMO.md => (no hits).",
+      "workaround": "Read the source (off-limits for a user) or discover it empirically as I did."
+    }
+  ],
+  "proof_assessment": {
+    "headline_claim_relevant_here": "deferred files survive crash + scheduler re-arms on restart, at-most-once-modulo-crash, ~0% idle CPU",
+    "verified_pass": [
+      "Future-deadline deferred message survives kill -9 and fires exactly once after restart on same state dir",
+      "Re-armed scheduler ~0.00% CPU (0 ticks/4s via /proc/<sched>/stat) -- no busy spin on recovery",
+      "Shipped crash_recovery.sh pass=4/4",
+      "Must-fail negative control present and actually fails: R2' no-recover variant loses the stranded outbox file as required",
+      "at-most-once held: R3 dup<=1, my own run fired exactly once"
+    ],
+    "gap": "Overdue-on-reboot (deadline elapsed during downtime) fires into an empty topic and is silently lost; consistent with at-most-once but undocumented and is the realistic embedded power-off case",
+    "negative_control_status": "working (R2' fails as required) -- this is NOT a clean-pass-with-no-control situation"
+  },
+  "free_text": "As the Pi/boat user, the literal challenge PASSES: a deferred --delay message whose deadline is still in the future survives a kill -9 of the entire process tree, the restarted broker re-arms from deferred/ with zero config, fires exactly once at the right time, and the re-armed scheduler measures ~0.00% CPU (0 ticks over 4s) -- which is what I actually care about for battery. The shipped tests/crash_recovery.sh passes 4/4 and, importantly, its must-fail control (R2' no-recover) genuinely fails, so this is a real proof, not a clean pass with a dead control. Satisfaction 7, would use again for non-overdue scheduling.\\n\\nThe one HIGH-severity finding is the case that matters most for my deployment and is undocumented: if the box is powered off LONGER than the delay (the normal boat reality), the deadline is already past at boot. On restart the scheduler immediately fires the overdue record on its first scan -- before any subscriber has reconnected -- and because there is no retained delivery, the message is silently lost. I measured this twice: deferred-remaining drops to 0 (file consumed) while the fresh subscriber's output stays empty across 10s (fire-count=0). That is technically inside 'at-most-once-modulo-crash,' but README/DEMO never warn about it, and the otherwise-blunt honesty section makes the omission glaring. The fix I want is small: either one documented sentence (overdue deferred records fire-on-rearm into currently-attached subscribers only; with none attached the message is dropped) or a brief boot-time grace/retain window so a reconnecting subscriber catches it. Secondary nit: broker2.log is empty on re-arm -- a single 're-armed N records' line would let me confirm recovery without poll-racing ls deferred/.\\n\\nFan-out/isolation were not the focus and are not claimed as the contribution; the scheduler's crash-recovery + idle-CPU behavior is the thing I tested and it largely earns its keep -- just document the overdue drop. Relevant scratch under .eval-scratch/ was cleaned up after the runs."
+}

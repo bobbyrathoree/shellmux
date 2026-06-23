@@ -37,6 +37,54 @@ else
   now_ms() { REPLY=$(date +%s%3N); }
 fi
 
+# --- input validation at the data boundary (round-1 evaluator findings) -------
+# The M0 chaos proof covers WELL-FORMED deadlines; it never exercised hostile
+# control input. Two adversarial product personas independently found the input
+# boundary fails silently: a non-numeric/float/out-of-range --at/--delay crashes
+# the per-connection handler (`$2: unbound` / arithmetic error) yet the publisher
+# sees rc=0 (F1/F7), and an unsanitized topic name is a path component, so the
+# broker mkdir's OUTSIDE the state dir (`../../../tmp/x`) — a publisher-controlled
+# mkdir-anywhere primitive (H1). These gates reject hostile input BEFORE it
+# reaches the scheduler or the filesystem. They touch only the input boundary —
+# never src/sched.sh, the mv commit point, or the wake discipline — so the proof
+# is insulated by construction (V3 in tests/input_validation.sh confirms the
+# legitimate deferred path is unchanged; chaos_deadline.sh confirms 0/0 holds).
+# All gates are behind SHELLMUX_NO_VALIDATE=1 (the must-fail negative control):
+# disabling them brings the crash + traversal back, proving the gates are load-
+# bearing — same one-knob-auditable discipline as SHELLMUX_NO_TRAP / LEAKY_WRITE.
+
+# valid_topic <name> -> 0 if a safe single path segment, 1 otherwise. A topic is
+# a directory name under topics/; it must not be able to climb out (`..`, `/`),
+# hide (leading `.`), or carry whitespace/metacharacters that word-split or
+# survive into a shell. Whitelist [A-Za-z0-9._-]+, reject a leading dot.
+valid_topic() {
+  [ "${SHELLMUX_NO_VALIDATE:-0}" = "1" ] && return 0
+  case "$1" in
+    ''|.*|*[!A-Za-z0-9._-]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# valid_deadline <kind> <value> -> 0 if usable, 1 otherwise. <kind> is "at"
+# (absolute unix seconds) or "delay" (relative seconds). Both must be a plain
+# non-negative integer (no float, no sign, no garbage — the arithmetic the
+# scheduler derives its MIN from is integer ms). An absolute --at must not be so
+# far in the future that it parks an effectively-never-firing record in deferred/
+# (F7): cap the horizon at SHELLMUX_MAX_DEFER_S seconds past now (default ~1yr).
+valid_deadline() {
+  [ "${SHELLMUX_NO_VALIDATE:-0}" = "1" ] && return 0
+  local kind="$1" v="$2"
+  case "$v" in ''|*[!0-9]*) return 1 ;; esac     # non-negative integer only
+  local horizon="${SHELLMUX_MAX_DEFER_S:-31536000}"
+  if [ "$kind" = "at" ]; then
+    now_ms; local now_s=$(( REPLY / 1000 ))
+    [ "$v" -le $(( now_s + horizon )) ] || return 1
+  else
+    [ "$v" -le "$horizon" ] || return 1
+  fi
+  return 0
+}
+
 # ---------------------------------------------------------------------------
 # fanout <record> <topic_dir>  — deliver one record to every live subscriber.
 #   The publisher writes each subscriber's FIFO (NEVER the socket). Boundedness
@@ -105,6 +153,9 @@ _handle() {
     SUB)
       local topic="$rest" td
       [ -n "$topic" ] && [ "$topic" != "SUB" ] || exit 0
+      # Reject a hostile topic name server-side (a raw socat client bypasses the
+      # `sub` helper, so this is the load-bearing check, not the client one).
+      valid_topic "$topic" || { printf 'shellmux: bad topic name\n' >&2; exit 1; }
       td="$dir/topics/$topic"; mkdir -p "$td"
       # INFIFO is intentionally NOT `local`: the EXIT trap runs in the top-level
       # script scope where a function-local would be out of scope (and under
@@ -167,6 +218,13 @@ _handle() {
         esac
       done
       [ -n "$topic" ] || exit 0
+      # Reject a hostile topic name server-side (mkdir-anywhere primitive, H1).
+      valid_topic "$topic" || { printf 'shellmux: bad topic name\n' >&2; exit 1; }
+      # Reject a malformed/out-of-range deadline BEFORE the arithmetic that would
+      # otherwise crash this handler under `set -u` (F1: `--at xyz` -> unbound;
+      # `--delay 1.5` -> arith error) or park a never-firing record (F7).
+      [ -z "$delay" ] || valid_deadline delay "$delay" || { printf 'shellmux: bad --delay\n' >&2; exit 1; }
+      [ -z "$at" ]    || valid_deadline at    "$at"    || { printf 'shellmux: bad --at\n'    >&2; exit 1; }
       local td="$dir/topics/$topic"; mkdir -p "$td"
       # Compute the run-at deadline in ms epoch. --delay wins over --at (matches
       # honker enqueue precedence, honker_ops.rs:567-571). No deadline => immediate.
@@ -308,6 +366,17 @@ serve() {
 # client helpers — sub/pub just connect a socat to the broker and speak the
 # one-line control protocol. <dir> is accepted for symmetry but unused client-side.
 # ---------------------------------------------------------------------------
+# usage <verb> — print the one-line invocation for a client verb and exit 0.
+# Guards `sub`/`pub` against `--help`/`-h`/too-few-args, which otherwise tripped
+# `local dir="$1" topic="$2"` under `set -u` (F4: `$2: unbound variable`).
+usage() {
+  case "$1" in
+    sub) printf 'usage: shellmux sub <dir> <topic> [--unix <path>|--tcp <port>]\n' ;;
+    pub) printf 'usage: shellmux pub <dir> <topic> [--at <epoch>|--delay <s>] [--unix <path>|--tcp <port>]\n' ;;
+  esac
+  exit 0
+}
+
 _endpoint() { # echoes the socat address from --unix/--tcp args
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -320,7 +389,10 @@ _endpoint() { # echoes the socat address from --unix/--tcp args
 }
 
 sub() {
+  case "${1:-}" in -h|--help|'') usage sub ;; esac
+  [ $# -ge 2 ] || usage sub
   local dir="$1" topic="$2"; shift 2
+  valid_topic "$topic" || die "bad topic name (allowed: A-Za-z0-9._-, no leading dot)"
   local ep; ep="$(_endpoint "$@")" || exit 1
   # Send the SUB control line, then hold the connection open so the broker keeps
   # our mailbox alive; socat pumps the socket's incoming messages to our stdout.
@@ -339,12 +411,18 @@ sub() {
 }
 
 pub() {
+  case "${1:-}" in -h|--help|'') usage pub ;; esac
+  [ $# -ge 2 ] || usage pub
   local dir="$1" topic="$2"; shift 2
-  # collect --at/--delay (M3); pass remaining as the control line
+  valid_topic "$topic" || die "bad topic name (allowed: A-Za-z0-9._-, no leading dot)"
+  # collect --at/--delay (M3); pass remaining as the control line. Validate the
+  # deadline client-side too so the publisher gets a clean nonzero rc + reason
+  # (the F1/F6 contract) instead of a silent server-side handler crash.
   local opts="" ep_args=()
   while [ $# -gt 0 ]; do
     case "$1" in
-      --at|--delay) opts="$opts $1 $2"; shift 2 ;;
+      --at)    valid_deadline at    "${2:-}" || die "bad --at (non-negative epoch seconds, within SHELLMUX_MAX_DEFER_S)";    opts="$opts --at $2"; shift 2 ;;
+      --delay) valid_deadline delay "${2:-}" || die "bad --delay (non-negative seconds, within SHELLMUX_MAX_DEFER_S)"; opts="$opts --delay $2"; shift 2 ;;
       --unix|--tcp) ep_args+=("$1" "$2"); shift 2 ;;
       *) shift ;;
     esac

@@ -1,0 +1,72 @@
+{
+  "persona": "adversarial-flooder",
+  "challenge_id": "prod-pub-sub-fanout",
+  "session_id": "eval-adversarial-flooder-prod-pub-sub-fanout-r001",
+  "completed": true,
+  "satisfaction_score": 7,
+  "would_use_again": true,
+  "challenge_fitness": "too-easy",
+  "iterations": 4,
+  "capabilities_used": [
+    "serve over --unix socket",
+    "sub to topic",
+    "pub to topic (stdin piped)",
+    "filesystem introspection via ls (topics/, sub_*.fifo, deferred/, outbox/)",
+    "exit-code checking",
+    "byte/line/uniq counting on sub output",
+    "in-order diff verification under flood"
+  ],
+  "capabilities_attempted_but_failed": [],
+  "what_worked_well": [
+    "Core fan-out challenge passes on first try: two weather subs both received 'sunny' intact, sports sub got exactly 0 bytes, pub exit 0, ALL stderr streams empty, broker.log clean.",
+    "Fan-out holds under flood: 200 distinct messages to 2 weather subs -> each got lines=200 uniq=200, diff against expected sequence reported 'w1 EXACT+ORDERED' and 'w2 EXACT+ORDERED'. No drops, no dupes, no reorder.",
+    "Zero cross-topic leak under volume: after 200 weather publishes, sports sub byte count stayed 0.",
+    "No retained/backfill semantics are correct: a subscriber that joins AFTER a publish gets 0 bytes; a mid-stream joiner received ONLY 'after-join', never 'before-join'.",
+    "Filesystem-as-admin-interface works as documented: `ls $D/topics/` shows topic subdirs, `ls $D/topics/weather/sub_*.fifo` counts subscribers (2 for weather, 1 for sports) exactly as the recipe claims.",
+    "Broker stayed alive and silent through all garbage topic-name input (no crash, no hang)."
+  ],
+  "wished_for": [
+    "Topic-name sanitization, or at minimum a documented constraint + rejection (nonzero exit / stderr) for topics containing '/', '..', whitespace, or ';'.",
+    "A non-blocking or batched publish path so a user can flood 200 messages without it taking minutes of serial linger-blocked pubs.",
+    "A visible drops_<pid> counter under flood as the DoD promises \u2014 I saw no file named 'drop' in topics/weather/ even though the docs reference drops_$pid; could not exercise it without wedging a sub (out of scope for this challenge but the counter's absence in the healthy-flood case was notable)."
+  ],
+  "evidence_log": [
+    "CORE CHALLENGE: `docker run ... bash /work/.eval-scratch/flooder-fanout.sh` -> 'weather subs (fifo count): 2', 'sports subs (fifo count): 1', pub 'sunny' exit code 0; w1.out='sunny', w2.out='sunny', sp.out byte count: 0; all of w1.err/w2.err/sp.err/broker.log empty.",
+    "FLOOD: `flooder-flood.sh` 200 msgs to weather -> 'w1: lines=200 uniq=200 first=msg-0001 last=msg-0200', 'w2: lines=200 uniq=200 ...', 'w1 EXACT+ORDERED', 'w2 EXACT+ORDERED', 'sports byte count (MUST be 0): 0', stderr all empty.",
+    "LATE SUB: `flooder-edges.sh` TEST A -> publish 'ghost' to weather with no subs (exit 0), then sub late -> 'late sub bytes (MUST be 0...): 0'.",
+    "MID-STREAM JOINER: TEST B -> early.out has 'before-join\\nafter-join'; joiner.out has ONLY 'after-join'.",
+    "TOPIC-NAME DEFECT: TEST C `pub $D '../escape'` exit=0 created dir 'escape' DIRECTLY in state dir (ls -la $D shows `drwxr-xr-x escape` next to broker.log/deferred/outbox). Topic 'with space' -> created topic dir 'with'. Topic 'topic;rm -rf' -> created dir 'topic;rm'. Topic 'a/b/c' -> nested dirs under topics/.",
+    "TRAVERSAL CONFIRM: `flooder-traversal.sh` `pub $D '../../../../tmp/SHELLMUX_PWNED_1'` exit=0 -> 'PWNED: /tmp/SHELLMUX_PWNED_1 EXISTS' (dir created OUTSIDE the state dir entirely). Sub-side traversal in same run reported 'safe via sub' (dir not created via sub path).",
+    "Broker liveness after all garbage: 'broker ALIVE', broker.log tail empty."
+  ],
+  "friction_points": [
+    {
+      "id": "topic-name-path-traversal",
+      "description": "Topic names are used unsanitized as filesystem path components. `pub <state> '../../../../tmp/SHELLMUX_PWNED' --unix <sock>` exits 0 with no error and creates a directory OUTSIDE the state dir (confirmed: /tmp/SHELLMUX_PWNED_1 created). Even `../escape` lands a dir directly in the state dir alongside broker.log/deferred/outbox. This is a publisher-controlled `mkdir -p` primitive \u2014 silent filesystem corruption / directory-creation-anywhere from untrusted topic input. No crash, but no rejection either.",
+      "severity": "high",
+      "category": "input-validation/security",
+      "evidence": "pub $D '../../../../tmp/SHELLMUX_PWNED_1' -> exit 0 -> 'PWNED: /tmp/SHELLMUX_PWNED_1 EXISTS'; pub $D '../escape' -> dir 'escape' appears in `ls -la $D` next to broker.log.",
+      "workaround": "Operator must trust all publishers and pre-validate topic names externally; there is no in-broker guard.",
+      "is_new": true
+    },
+    {
+      "id": "topic-name-word-splitting",
+      "description": "Topic names containing whitespace are word-split rather than treated as one token: `pub $D 'with space'` created a topic dir named just 'with', and `pub $D 'topic;rm -rf'` created 'topic;rm'. The semicolon survived into a directory name too. A user passing a multi-word or punctuated topic silently gets a different topic than intended \u2014 subscribers on the full name would never match.",
+      "severity": "medium",
+      "category": "input-validation/correctness",
+      "evidence": "TEST C: topic 'with space' -> `ls $D/topics/` shows 'with'; topic 'topic;rm -rf' -> shows 'topic;rm'.",
+      "workaround": "Avoid spaces/punctuation in topic names; no documented charset constraint to warn the user.",
+      "is_new": true
+    },
+    {
+      "id": "blocking-serial-publish-throughput",
+      "description": "Every `pub` blocks for the linger window (and the recipe confirms it). Flooding 200 messages serially took on the order of minutes wall-clock in the container. For an adversary (or any high-rate publisher) this makes the documented 'flood' workflows painful and makes the broker's real throughput ceiling feel low without explicit batching/non-blocking support.",
+      "severity": "low",
+      "category": "performance/ergonomics",
+      "evidence": "flooder-flood.sh loop of 200 `pub` calls ran long enough to require a background run + 45s+ poll before completion (exit 0).",
+      "workaround": "Background each pub with & or accept the serial latency; docs already note pub blocks for linger.",
+      "is_new": true
+    }
+  ],
+  "free_text": "Verdict on the assigned challenge: PASS, and honestly a strong one for the part the project itself says is FREE. The literal success criteria were met on the first run (two weather subs both got 'sunny' intact, sports sub got 0 bytes, pub exit 0, zero error output). I pushed past the staged single-message case to make sure it wasn't theater: a 200-message flood produced EXACT+ORDERED delivery to both weather subs (lines=200 uniq=200, diff-clean) with zero cross-topic leak to sports, and the no-retained / no-backfill semantics for late and mid-stream subscribers are correct. The fork-per-connection fan-out claim survives adversarial volume. Note: this challenge does NOT touch the deadline proof (chaos/delay/crash), so I did not assess missed=0/dup=0 or the negative control here.\\n\\nWhere I drew blood is OFF to the side of the success criteria, which is my job as the flooder: topic names are completely unsanitized. `pub` with a topic of '../../../../tmp/SHELLMUX_PWNED' exits 0 and creates a directory clean outside the state dir \u2014 a publisher-controlled mkdir-anywhere primitive. Even '../escape' drops a dir into the state root next to broker.log/deferred/outbox. Spaces word-split the topic ('with space' -> topic 'with') and ';' survives into a dir name. No crash, no hang \u2014 but silent filesystem corruption and a traversal escape from untrusted input. That's high-severity for a broker meant to take topic names from arbitrary publishers, and it directly feeds the persona's 'garbage input -> silent corruption / unbounded growth' thesis. I scored 7 rather than higher purely because of these unsanitized-input defects; the fan-out behavior itself would be an 8-9. Challenge fitness: too-easy \u2014 fan-out is the FREE part by the project's own admission, and it works flawlessly, so this challenge can't fail the project; the interesting failures live at the input boundary and in the deadline scheduler, neither of which this challenge exercises. All findings are from observed behavior only (stdout, exit codes, ls/cat, byte/line counts); I did not read src/ or test source. Scratch scripts: /work/.eval-scratch/flooder-fanout.sh, flooder-flood.sh, flooder-edges.sh, flooder-traversal.sh."
+}

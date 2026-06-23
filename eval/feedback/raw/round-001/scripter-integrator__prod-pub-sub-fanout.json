@@ -1,0 +1,78 @@
+{
+  "persona": "scripter-integrator",
+  "challenge_id": "prod-pub-sub-fanout",
+  "session_id": "eval-scripter-integrator-prod-pub-sub-fanout-r001",
+  "completed": true,
+  "satisfaction_score": 9,
+  "would_use_again": true,
+  "challenge_fitness": "good",
+  "iterations": 5,
+  "capabilities_used": [
+    "serve over --unix socket",
+    "sub to a topic",
+    "pub one message to a topic",
+    "topics-as-directories introspection via ls",
+    "live subscriber count via ls topics/<t>/sub_*.fifo | wc -l",
+    "pipe file -> while read -> pub composition",
+    "pipe subscriber stdout -> awk downstream filter",
+    "publish to topic with zero subscribers (clean no-op)",
+    "forget-on-death FIFO prune on subscriber kill",
+    "exit code / stderr inspection on pub"
+  ],
+  "capabilities_attempted_but_failed": [],
+  "what_worked_well": [
+    "Core fan-out is exactly correct: both same-topic subs received the byte-exact message 'sunny-and-23C', the off-topic 'sports' sub received nothing (empty file), all three subscriber stderr channels empty, broker stderr empty, pub exit code 0. ALL ASSERTIONS PASSED.",
+    "DEMO.md Beat 2/Beat 4 gave me the exact CLI shape (serve/sub/pub, --unix, topic-as-arg, ls topics/ introspection) so I could write the scenario without ever reading src/. The validated recipe in the prompt matched reality 1:1.",
+    "Composability holds: 'cat src.txt | while read line; do pub; done' published each line as a frame, and piping the subscriber output file through awk ($1==\"beta\"{print $2} -> 2) worked cleanly. The filesystem-as-API composes with standard UNIX filters.",
+    "Content-blind framing is real: a payload full of shell metachars ($HOME, backticks, &&, 'rm -rf /', <html> tags) round-tripped byte-for-byte intact with zero injection or corruption.",
+    "Multi-KB fan-out is faithful: an 8193-byte single-line message arrived byte-identical (cmp -s) to BOTH same-topic subscribers, and the two subscriber streams were identical to each other.",
+    "Publish to a topic with zero subscribers is a clean no-op: rc=0, empty stdout, empty stderr. Exactly what a scripter wants in a pipeline.",
+    "Forget-on-death is honest: killing one of two weather subs dropped the live sub_*.fifo glob count from 2 to 1 within ~2s, the survivor still received a later publish, and the publish to the now-vanished sub produced no error spew (rc=0, empty stderr).",
+    "Predictable, globbable paths: <state>/topics/<topic>/sub_<pid>.fifo is stable and trivial to enumerate from a script."
+  ],
+  "wished_for": [
+    "A documented exit-code contract for pub: 'rc 0 = handed off to broker; what about pub to a vanished socket or down broker?' I observed rc=0 on the happy and empty-topic paths but the docs never state the exit-code semantics a scripter must branch on.",
+    "drops_<pid> counter files appear to be lazily created \u2014 in a healthy no-drop run only .drops.lock exists under the topic dir, not drops_*. DEMO.md Beat 4 says 'cat topics/<t>/drops_*' but that glob errors with 'No such file' when nothing has dropped. A scripter watching drops_* wants those files to exist at 0 from subscribe time, or the docs to say 'created on first drop'.",
+    "A copy-pasteable fan-out one-liner / example in README.md itself. README documents the architecture but the only runnable sub/pub example lives in DEMO.md Beat 2 (single sub). A 2-sub fan-out example next to the pitch would shorten time-to-first-success.",
+    "Clarity in the docs on the framing model AT THE CONSUMER: the broker delivers raw bytes (an embedded newline in a publish shows up as two lines at the subscriber). That's the right line-oriented behavior for piping, but the 'length-prefixed records / torn write detected' framing claim is an internal fan-out property, not something visible/guaranteed as an atomic message boundary at the subscriber's stdout. Docs should distinguish the two so a scripter doesn't assume one publish == one read."
+  ],
+  "friction_points": [
+    {
+      "id": "drops-glob-absent-when-no-drops",
+      "description": "DEMO.md Beat 4 instructs 'cat $D/topics/<topic>/drops_*' to inspect per-subscriber drops, but in a healthy run with no backpressure those files do not exist (only .drops.lock is present under the topic dir). A scripter who globs 'cat drops_*' in a watch loop gets a 'No such file or directory' error until the first drop occurs. The counter should exist at 0 from subscribe time, or the doc should say it is created on first drop.",
+      "severity": "low",
+      "category": "introspection/docs",
+      "evidence": "find topics -maxdepth 2 showed: topics/weather/.drops.lock, sub_43.fifo, sub_44.fifo -- no drops_* file present during a no-drop fan-out run.",
+      "is_new": true,
+      "workaround": "Tolerate the missing-file error in scripts (cat drops_* 2>/dev/null), or only read drops_<pid> after confirming a drop happened."
+    },
+    {
+      "id": "pub-exit-code-contract-undocumented",
+      "description": "Neither README.md nor DEMO.md states pub's exit-code contract. I observed rc=0 for the happy path and rc=0 for publish-to-empty-topic and publish-to-vanished-subscriber (good, clean no-op), but a scripter integrating pub into a pipeline cannot know from the docs whether a nonzero code is ever returned (e.g. broker down, bad socket) or what it means.",
+      "severity": "low",
+      "category": "docs/contract",
+      "evidence": "pub to ghosttopic with no subs: 'rc=0 stdout=[] stderr=[]'. pub to weather after a sub was killed: 'pub rc=0 pub.err=[]'. No documented spec for nonzero cases.",
+      "is_new": true,
+      "workaround": "Empirically treat rc=0 as success; cannot rely on a documented failure code yet."
+    },
+    {
+      "id": "no-python3-but-thats-mine",
+      "description": "Minor self-inflicted: the dev container has no python3, so my first big-payload generator failed. Not a product defect, but worth noting that the container is bash+coreutils+util-linux+socat only, so example scripts a user copies must avoid python.",
+      "severity": "low",
+      "category": "environment",
+      "evidence": "'python3: command not found' in scripter-framing.sh; re-ran with pure-shell 'printf X%.0s $(seq 1 8192)' and it worked.",
+      "is_new": true,
+      "workaround": "Generate payloads with printf/seq/head -c instead of python in the container."
+    }
+  ],
+  "evidence_log": [
+    "docker run ... bash /work/.eval-scratch/scripter-fanout.sh -> 'weather sub fifos: 2', 'sports sub fifos: 1'; pub rc=0 empty stdout/stderr; w1.out=[sunny-and-23C], w2.out=[sunny-and-23C], sp.out=[] (empty); all subscriber+broker stderr empty; 'ALL ASSERTIONS PASSED'; OUTER_RC=0",
+    "scripter-compose.sh PROBE 1 (pub to topic with no subs): 'rc=0 stdout=[] stderr=[]' and ghosttopic dir created -> clean no-op",
+    "scripter-compose.sh PROBE 2: 'cat src.txt | while read | pub' delivered alpha 1/beta 2/gamma 3; downstream 'awk $1==\"beta\"{print $2}' -> 2; pub2.err empty",
+    "scripter-compose.sh PROBE 3: payload 'msg with spaces $HOME `id` && rm -rf / ; <html>tag</html>' received byte-identical -> 'FRAME INTACT: yes'; all stderr empty",
+    "scripter-framing.sh PROBE A: publish 'line-one\\nline-two-same-msg\\n' arrived at subscriber as 2 lines / 27 bytes identical to input -> consumer sees raw byte stream, embedded NL is not collapsed to one frame at the consumer boundary",
+    "scripter-bigpayload.sh: 8193-byte single-line message -> s1 received 8193 bytes, s2 received 8193 bytes, 'S1 == sent: YES', 'S2 == sent: YES', 'S1 == S2 (fan-out identical?): YES'; pub.err and broker.err empty",
+    "scripter-paths.sh: layout 'topics/weather/{.drops.lock, sub_43.fifo, sub_44.fifo}'; live count via 'ls sub_*.fifo|wc -l' = 2; after killing one sub -> 1 (forget-on-death); later publish 'after-death' reached survivor (b.out=[after-death]) with pub rc=0 and empty stderr"
+  ],
+  "free_text": "Challenge prod-pub-sub-fanout: PASS, cleanly, on the first scripted attempt. Two subscribers on 'weather' both received the exact message 'sunny-and-23C'; the off-topic 'sports' subscriber received nothing (zero-byte output); every stderr channel (3 subs + broker) was empty; pub exited 0. I judged this purely from observed behavior (stdout files, ls/find, exit codes, stderr capture) per product-phase rules \u2014 I did NOT read src/.\\n\\nAs a scripter/integrator I pushed past the bare criteria into the things I'd hit wiring this into pipelines, and it held up well: publish-to-empty-topic is a clean rc=0 no-op (no error spew); 'cat file | while read | pub' composes; piping a subscriber through awk works; a metachar-laden payload round-trips byte-exact (content-blind, no injection); an 8193-byte message fans out byte-identical to both subs; and forget-on-death honestly drops the live sub_*.fifo glob count from 2 to 1 when a sub dies, with the survivor still served and no error to the vanished one. The filesystem-as-API promise genuinely holds for enumeration and composition.\\n\\nThree low-severity friction points, none blocking: (1) DEMO.md Beat 4's 'cat topics/<t>/drops_*' errors with 'No such file' in a healthy run because drops_* are lazily created (only .drops.lock exists with zero drops) \u2014 either create them at 0 on subscribe or document the lazy creation; (2) pub's exit-code contract is undocumented \u2014 I observed rc=0 everywhere I tried including failure-adjacent paths, but a scripter can't branch on undocumented codes; (3) self-inflicted: the container has no python3, so copy-paste examples must stay pure-shell. None of these touch the deadline proof, which this challenge does not exercise. Satisfaction 9/10 \u2014 the core thing works exactly as advertised and composes like a real UNIX citizen; the dock is purely the small introspection/contract-doc gaps a power user trips over."
+}

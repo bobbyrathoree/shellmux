@@ -1,0 +1,89 @@
+{
+  "persona": "broker-operator",
+  "challenge_id": "prod-pub-sub-fanout",
+  "session_id": "eval-broker-operator-prod-pub-sub-fanout-r001",
+  "completed": true,
+  "challenge_fitness": "good",
+  "satisfaction_score": 9,
+  "would_use_again": true,
+  "iterations": 2,
+  "capabilities_used": [
+    "serve (zero-config UNIX socket start)",
+    "sub <topic>",
+    "pub <topic>",
+    "topic-scoped fan-out",
+    "ls introspection of topics/ and sub_*.fifo",
+    "forget-on-death (FIFO prune on subscriber kill)"
+  ],
+  "capabilities_attempted_but_failed": [],
+  "what_worked_well": [
+    "Zero-config start did exactly what the persona wants: 'bash src/shellmux serve $D --unix $SOCK &' came up with no config file, no port registry, no service unit. Matches DEMO.md Beat 2 verbatim.",
+    "Topic-scoped fan-out is correct and intact. Two weather subscribers each received 'storm-incoming-42' byte-for-byte; the sports subscriber received exactly 0 bytes. Re-ran with three ordered messages (alpha/bravo/charlie) x5 trials: both weather subs got [alpha,bravo,charlie] in order every time, sports stayed empty every time.",
+    "Truly silent on the happy path. Audited broker.log, every subscriber's stderr, and pub stdout+stderr: total_err_bytes=0 across all 5 reproducibility runs. No spurious warnings, no noise.",
+    "Introspection via plain ls works as advertised: 'ls $D/topics/' showed {sports, weather}; 'ls $D/topics/weather/sub_*.fifo | wc -l' = 2, sports = 1. No bespoke admin command needed (persona explicitly values this).",
+    "Forget-on-death is clean: killing one of two weather subs dropped the FIFO count 2->1 within ~2s, and a subsequent publish reached the survivor ('after-death') with pub stderr = 0 bytes \u2014 the dead sub's stranded FIFO caused no error for the publisher."
+  ],
+  "wished_for": [
+    "A one-line 'hello world' fan-out example near the TOP of README.md. The README and DEMO.md both lead with the deadline-scheduler chaos proof (the contribution), which is correct for a judge \u2014 but a homelab operator skims for the dumbest possible pub/sub snippet first. DEMO.md Beat 2 has it, but it's mixed into a --delay example; a bare serve/sub/pub triad would shave a minute off first use.",
+    "Consistent subcommand casing in prose. The CLAUDE.md/spec mission paragraphs say 'SUB'/'PUB' (uppercase) while the actual CLI verbs are lowercase 'sub'/'pub' (as shown in DEMO.md and confirmed by my runs). The runnable docs are correct; only the conceptual prose uses uppercase. A copy-paste-from-the-mission-text user would hit a momentary 'why doesn't SUB work' before noticing the lowercase in DEMO.md."
+  ],
+  "evidence_log": [
+    "Image present: 'docker images | grep shellmux' -> shellmux-dev:latest 159MB",
+    "Scenario script run: docker run --rm -v $PWD:/work -w /work shellmux-dev bash /work/.eval-scratch/broker-operator-fanout.sh",
+    "Topics after subscribe: 'ls $D/topics/' -> sports / weather ; weather sub fifos: 2 ; sports sub fifos: 1",
+    "pub exit code: 0",
+    "weather sub 1 (w1.out): 'storm-incoming-42' ; weather sub 2 (w2.out): 'storm-incoming-42' ; sports sub 1 (s1.out): <empty>",
+    "Error audit: broker.log bytes=0, w1.err=0, w2.err=0, s1.err=0, pub.out=0, pub.err=0",
+    "Reproducibility (5 runs, 3 ordered msgs each): run#1..#5 all w1=[alpha,bravo,charlie,] w2=[alpha,bravo,charlie,] sports_bytes=0 total_err_bytes=0",
+    "forget-on-death: before kill weather fifos=2 ; after killing one sub weather fifos=1 ; survivor got [after-death,] ; pub2 err bytes: 0"
+  ],
+  "friction_points": [
+    {
+      "id": "fanout-readme-buries-hello-world",
+      "description": "The first-read docs (README.md, DEMO.md) lead with the deadline-scheduler chaos proof and the simplest serve/sub/pub fan-out example is only shown inside a --delay example (DEMO.md Beat 2, lines 50-57). A homelab operator just wants the bare three-line pub/sub triad up top to confirm the basic thing works before reading the contribution pitch. Mild discovery friction only; the actual behavior is flawless.",
+      "severity": "low",
+      "category": "documentation",
+      "evidence": "README.md lines 1-9 and DEMO.md lines 23-46 are the chaos proof; the bare fan-out (serve/sub/pub) is mixed into the '--delay 5' example at DEMO.md:50-57. No standalone 'two subs, one publish' example exists in the user-facing docs.",
+      "workaround": "I derived the fan-out invocation from the evaluator recipe + DEMO.md Beat 2 and it worked first try; an operator would do the same in ~1 minute.",
+      "is_new": true
+    },
+    {
+      "id": "sub-pub-casing-mismatch",
+      "description": "Conceptual prose (CLAUDE.md/spec mission) refers to the verbs as 'SUB'/'PUB' uppercase, while the actual CLI verbs are lowercase 'sub'/'pub'. Persona explicitly cares about clarity of how to subscribe vs publish; an operator copying the uppercase token from the mission text would hit a brief stumble.",
+      "severity": "low",
+      "category": "documentation",
+      "evidence": "CLAUDE.md mission/DoD prose uses SUB/PUB uppercase; DEMO.md:53-54 and my working runs use lowercase 'sub'/'pub'. Runnable docs (DEMO.md) are correct.",
+      "workaround": "Use lowercase as shown in DEMO.md and the evaluator recipe.",
+      "is_new": true
+    }
+  ],
+  "free_text": "CHALLENGE PASSED \u2014 completed:true, verified from real container runs (not imagined). The exact-fan-out requirement is met cleanly and reproducibly: two subscribers on topic 'weather' both received the single published message byte-for-byte ('storm-incoming-42'), the off-topic 'sports' subscriber received exactly 0 bytes, and there was zero error output anywhere (broker log, all three subscribers' stderr, and the publisher's stdout+stderr were all 0 bytes). I re-ran the scenario 5x with 3 ordered messages each to rule out lucky timing \u2014 every run delivered [alpha,bravo,charlie] in order to both weather subs and nothing to sports, total_err_bytes=0 across the board. As a homelab operator I also checked the two things I always check beyond the literal ask: introspection ('ls $D/topics/' and 'ls .../sub_*.fifo | wc -l' showed the live subscriber counts with no special admin CLI \u2014 exactly what I want) and forget-on-death (killing one weather sub dropped its FIFO 2->1 within ~2s and a later publish still reached the survivor without erroring on the dead sub's stranded pipe \u2014 the stranded-FIFO bad-state-is-impossible claim from DEMO.md held). Zero-config start matched the persona's top priority: a single 'serve' line with no config/port registry/service unit. Note: this challenge does NOT touch the deadline proof (chaos/delay/crash), so the negative-control scrutiny rule didn't apply here; I evaluated fan-out, isolation, and silence only, which the docs themselves correctly label as the FREE-from-fork parts, not the contribution. Only friction is cosmetic doc discoverability (no bare hello-world fan-out at the top; SUB/PUB casing in prose vs lowercase CLI) \u2014 both low severity, neither blocked me. Strong showing; I'd run this on my homelab box.",
+  "proof_assessment": {
+    "applies": false,
+    "reason": "This challenge is the FREE-from-fork fan-out/isolation path, not the deadline-scheduler contribution. The missed=0/dup=0 + must-fail-negative-control proof spine was not exercised here and is out of scope for prod-pub-sub-fanout. No proof claims were made or tested in this session.",
+    "fanout_correctness_observed": "exactly-2-of-3 subscribers received the message, off-topic received nothing, 5/5 reproducible, 0 error bytes"
+  },
+  "claim_audit": [
+    {
+      "claim": "README.md:33-34 \u2014 'a homelab event bus' is a target use case; fan-out reaches every live subscriber and nobody else",
+      "verdict": "SUPPORTED",
+      "evidence": "2 weather subs both received 'storm-incoming-42'; sports sub received 0 bytes; reproduced 5x"
+    },
+    {
+      "claim": "DEMO.md:108-109 \u2014 stranded-FIFO bad state is made impossible (write to vanished pipe is harmless)",
+      "verdict": "SUPPORTED",
+      "evidence": "killed one weather sub; subsequent publish reached survivor with pub stderr=0 bytes, no error on the dead sub's FIFO"
+    },
+    {
+      "claim": "DEMO.md:79-81 / README 'forget-on-death come free from fork' \u2014 subscriber count visible via ls and pruned on death",
+      "verdict": "SUPPORTED",
+      "evidence": "ls .../sub_*.fifo|wc -l = 2 before, = 1 within ~2s after killing one sub"
+    },
+    {
+      "claim": "persona expectation: zero-config start, no config/port registry/service unit",
+      "verdict": "SUPPORTED",
+      "evidence": "single 'serve $D --unix $SOCK &' line brought the broker up; broker.log 0 bytes"
+    }
+  ],
+  "errors_encountered": []
+}

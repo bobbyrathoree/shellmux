@@ -76,18 +76,20 @@ control flips one knob to terminalphone's `printf > $f &` pattern and the count
 ## Beat 4 — the whole broker is `ls` and `cat`
 
 ```bash
-ls "$D"/topics/                          # topics are directories
-ls "$D"/topics/control/sub_*.fifo | wc -l   # live subscriber count
-cat "$D"/topics/control/drops_*             # per-subscriber drops
-ls "$D"/deferred/ | sort | head -1          # the next deadline
+ls "$D"/topics/                              # topics are directories
+ls "$D"/topics/control/sub_*.fifo | wc -l    # live subscriber count
+cat "$D"/topics/control/drops_* 2>/dev/null || echo "no drops"   # per-sub drops (file appears on first drop)
+ls "$D"/deferred/ | sort | head -1           # the next deadline
 ```
 
-No admin protocol. State *is* the filesystem (`tests/introspection.sh`).
+No admin protocol. State *is* the filesystem (`tests/introspection.sh`). A
+`drops_<pid>` file is created lazily on the *first* dropped record, so a healthy
+topic has none — hence the `2>/dev/null || echo "no drops"`.
 
 ## Run everything
 
 ```bash
-bash tests/run_all.sh                # all 7 suites, each with its must-fail control
+bash tests/run_all.sh                # all 8 suites, each with its must-fail control
 N_MAIN=400 bash tests/run_all.sh     # fast (~90s)
 bash tests/bench.sh                  # throughput + footprint
 ```
@@ -98,8 +100,13 @@ bash tests/bench.sh                  # throughput + footprint
 Linux aarch64, bash 5.2, nproc=14
 B1  immediate publish:  1 sub  ~1360 msg/s ;  3 subs ~480 msg/s/sub (~1440 aggregate)
 B2  idle scheduler:     0 CPU ticks over 3s (~0%)
-B3  20 subscribers:     20 FIFOs, ~110 procs (ceiling = fd/process limits)
+B3  20 subscribers:     20 FIFOs, ~110 procs (~5 procs + ~2.4MB RAM per sub)
 ```
+
+The subscriber ceiling is **RAM-bound** (~2.4 MB/sub: socat + handler + drainer),
+not fd- or pid-bound (the broker holds only a handful of fds; `ulimit -n` is ~1M).
+On a 512 MB Pi that wall bites around **~100–150 subscribers** — measure on the
+actual box before quoting a number on a slide.
 
 ## Why it's honest (the things we do NOT claim)
 
@@ -113,12 +120,27 @@ B3  20 subscribers:     20 FIFOs, ~110 procs (ceiling = fd/process limits)
 - **Not POSIX-anywhere.** Needs bash≥4, `flock`, `timeout`, `socat`; sub-second
   timers need bash≥4 fractional `read -t` (whole-second floor on bash3/dash —
   faithful to honker's own `Duration::from_secs`).
+- **Not binary-clean transport.** A record is **one newline-delimited line of
+  NUL-free text**: NUL bytes are stripped, a payload is truncated at its first
+  newline, and an unterminated payload isn't delivered until a newline arrives.
+  "Content-blind" means the broker never *parses* your payload — not that it
+  preserves arbitrary bytes.
 - **Not a serious broker.** No persistence, acks, wildcards, auth/TLS (delegate
-  to `socat OPENSSL`/SSH), or clustering. At-most-once-modulo-crash, by design.
-- **Line count:** `src/sched.sh` is 167 lines; `src/shellmux` is 374 (fan-out +
-  bounded drainer + deferred PUB + client helpers + reaper). The "~150 lines"
-  pitch is the *scheduler*, which is the contribution; the broker around it is
-  honest plumbing.
+  to `socat OPENSSL`/SSH), or clustering. **At-most-once-modulo-crash, by design:**
+  a deferred message whose deadline elapsed while the broker was down fires
+  immediately on restart into whoever is connected *then* — with no retained
+  delivery, a subscriber that reconnects later does not receive it. That's the
+  expected face of the guarantee, not a bug.
+- **Hostile input is rejected, not silently mishandled.** Topic names are
+  `[A-Za-z0-9._-]+` (no `../` traversal that `mkdir`s outside the state dir);
+  `--at`/`--delay` must be a non-negative integer within `SHELLMUX_MAX_DEFER_S`
+  (default 1yr) or the publish returns nonzero with a reason. The data path that
+  *derives* the scheduler's deadlines is validated before it reaches the proven
+  core (`tests/input_validation.sh`, `SHELLMUX_NO_VALIDATE=1` must-fail control).
+- **Line count:** `src/sched.sh` is 167 lines; `src/shellmux` is 452 (fan-out +
+  bounded drainer + deferred PUB + client helpers + reaper + input validation).
+  The "~150 lines" pitch is the *scheduler*, which is the contribution; the
+  broker around it is honest plumbing.
 
 The brag is small and correct: a race-free, data-derived deadline scheduler in
 shell, proven by 5000 adversarial trials with a must-fail negative control — on
