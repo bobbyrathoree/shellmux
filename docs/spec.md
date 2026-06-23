@@ -18,7 +18,7 @@ That is the brag, and it is small. Everything else is honestly a refactor: isola
 
 - **honker (the algorithm we port).** honker's claim loop queries `queue_next_claim_at` (`honker-core/src/honker_ops.rs:536-558`: `SELECT COALESCE(MIN(deadline),0)` over pending `run_at` and processing `claim_expires_at`) then calls `recv_until(&self.rx, next_at)` (`packages/honker-rs/src/lib.rs:828`). `recv_until` itself (`lib.rs:1558-1582`) does `recv_timeout(Duration::from_secs(unix_sec-now))` then drains. We re-express this over FIFOs/`read -t`. **Crucially, even honker's reference uses `from_secs` — whole-second resolution** — so our ~1s granularity is faithful, not a degradation. The "recv first, then drain" ordering (`lib.rs:1105-1106`: *"the opposite order would lose a wakeup when a publish lands between refill() and drain"*) is the rule we adopt as "stage the file, *then* poke the wake-FIFO." We add no SQLite, no Rust, no WAL.
 - **honker's prune vs. death-guard (we fix the draft's swapped mapping).** honker's *opportunistic prune* is `list.retain(|_,s| match s.try_send(()) { Disconnected => false })` (`honker-core/src/lib.rs:957-960`) — this is what maps to our subscriber `EXIT`-trap unlink + `[ -p ]` skip (a leaf forgotten on its own death). honker's `WatcherDeathGuard::drop` (`lib.rs:908-916`) clears *all* senders when the **central** watcher thread dies so everyone fails loud — that maps to our **broker shutdown** (`pkill -P`), not to a single subscriber dying. The draft inverted these; this version states the mapping correctly.
-- **terminalphone (the relay shape, cited for what's actually there).** The socat-fork acceptor (`terminalphone.sh:1206`/`1350`), per-client `out_${pid}.fifo` (`:1518`, mkfifo `:1520`), background drainer (`:1540`), keepalive `exec 3>` (`:1546`), `[ -p ]`-guarded fan-out (`:1567-1572`), flock'd stats (`:1585-1590`), and `pkill -P` cleanup (`:1674`) are all real and reused. **What is NOT there:** non-blocking writes. Line 1570 is `printf '%s\n' "$line" > "$f" 2>/dev/null &` — a *blocking* write backgrounded with `&`. We do not cite it for backpressure; we replace it (see Hard Problem).
+- **terminalphone (the relay shape, cited for what's actually there).** The socat-fork acceptor (`terminalphone.sh:1206`/`1350`), per-client `out_${pid}.fifo` (`:1518`, mkfifo `:1520`), background drainer (`:1540`), keepalive `exec 3>` (`:1546`), `[ -p ]`-guarded fan-out (`:1567-1572`), flock'd stats (`:1585-1590`), and `kill`+`pkill -P` cleanup (`:1674-1676`) are all real and reused. **What is NOT there:** non-blocking writes. Line 1570 is `printf '%s\n' "$line" > "$f" 2>/dev/null &` — a *blocking* write backgrounded with `&`. We do not cite it for backpressure; we replace it (see Hard Problem).
 - **Mosquitto / NATS / Redis / ZeroMQ.** kLOC–MLOC daemons with wire protocols and config. We do not compete on throughput, persistence, or clustering — only on auditability and a tiny dependency set.
 - **inetd / xinetd / systemd socket activation.** Same fork-per-connection model socat gives us; no pub/sub, no topics, no timed delivery. They are transport, not broker.
 
@@ -54,7 +54,7 @@ We default to (1) and benchmark both on a real Pi.
 6. **SCHEDULER WAKE.** Computes `next=min(deferred/*)`, blocks `read -t $((min(idle,next-now)))` on the wake-FIFO; wakes on poke or timeout.
 7. On wake: re-scan `deferred/`, `mv` each now-due file into the fan-out path (step 4), recompute `next`, re-block.
 8. **SUBSCRIBER DEATH.** Disconnect/kill → `EXIT` trap `rm -f sub_$$.fifo`; next scan never sees it; count drops by one.
-9. **BROKER DEATH.** Parent `kill`s socat, `pkill -P` the handlers (terminalphone.sh:1674); each `EXIT` trap unlinks; subscribers get EOF and reconnect — fail-loud, no silent hang.
+9. **BROKER DEATH.** Parent `kill`s socat, `pkill -P` the handlers (terminalphone.sh:1674-1676); each `EXIT` trap unlinks; subscribers get EOF and reconnect — fail-loud, no silent hang.
 
 ## Key Design Decisions & Tradeoffs
 
@@ -77,7 +77,8 @@ We default to (1) and benchmark both on a real Pi.
 **As-built note (honesty reconciliation, post-implementation).** The "~150 lines / one screen"
 figure is the size of the *contribution* — `src/sched.sh` is **167 lines**. The full broker
 `src/shellmux` (acceptor + SUB/PUB + bounded-drainer fan-out + deferred-PUB wiring + client helpers +
-GC reaper) is **374 lines**. The pitch should say "the scheduler is one screen", not "the whole
+GC reaper + input validation) is **458 lines** (374 pre-R1; +78 for the input-boundary gates that
+validate the data path deriving the deadlines, +6 for the round-002 arg-rc split). The pitch should say "the scheduler is one screen", not "the whole
 broker". The wedged-flood beat is as-built true: healthy subscribers receive the full flood while a
 wedged peer's `drops_$pid` ticks up and `ps --ppid $PUB` stays flat (~15 vs a leaky control's ~1300).
 The bounded write is **not fork-free** (each is a `timeout bash -c`, ~0.5–10ms on the dev host); the

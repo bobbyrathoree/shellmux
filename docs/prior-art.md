@@ -37,7 +37,7 @@ A terminal-sharing relay built on socat-fork + FIFOs.
 
 - Reused as cited: socat-fork acceptor (`terminalphone.sh:1206`/`:1350`), per-client FIFO
   (`:1518-1520`), drainer (`:1540-1544`), keepalive `exec 3>` (`:1546`), `[ -p ]`-guarded fan-out
-  (`:1567-1572`), flock'd stats (`:1585-1590`), `pkill -P` cleanup (`:1674`), persistent fd binding
+  (`:1567-1572`), flock'd stats (`:1585-1590`), `kill`+`pkill -P` cleanup (`:1674-1676`), persistent fd binding
   (`:1886-1887`).
 - **What is NOT there / what we replace:** non-blocking writes. Line `:1570` is
   `printf '%s\n' "$line" > "$f" 2>/dev/null &` — a *blocking* write backgrounded with `&`. Under a

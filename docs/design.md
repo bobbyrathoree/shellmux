@@ -50,7 +50,7 @@ subdirs created with `mkdir -p` (atomic). Subscriber liveness *is* the existence
 flock pattern from `terminalphone.sh:1585-1590`.
 
 **Cleanup.** Broker shutdown `kill`s socat and `pkill -P $socat_pid` reaps the forked handlers
-(`terminalphone.sh:1674`); each handler's `EXIT` trap unlinks its FIFO; subscribers get EOF and
+(`terminalphone.sh:1674-1676`); each handler's `EXIT` trap unlinks its FIFO; subscribers get EOF and
 reconnect — fail-loud, never a silent hang.
 
 ## The deadline scheduler — mechanism

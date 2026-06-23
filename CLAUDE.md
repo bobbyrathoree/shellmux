@@ -102,7 +102,7 @@ Every line below was verified to exist as cited. Read the source before re-expre
 | `[ -p ]`-guarded fan-out loop | `terminalphone.sh:1567-1572` (`for f in out_*.fifo; [ -p "$f" ] || continue`) | ✓ verified |
 | **The BUG we replace (not cite as the fix)** | `terminalphone.sh:1570` `printf '%s\n' "$line" > "$f" 2>/dev/null &` | A *blocking* write backgrounded with `&` → one stuck process per message to a wedged sub = fd/process leak. We replace it with a bounded ring drainer. ✓ verified |
 | flock'd shared counters | `terminalphone.sh:1585-1590` (`( flock 9; ... ) 9>...lock`) | ✓ verified |
-| Cleanup of forked handlers | `terminalphone.sh:1674` `pkill -P "$socat_pid"` | ✓ verified |
+| Cleanup of forked handlers | `terminalphone.sh:1674-1676` (`kill "$socat_pid"` then `pkill -P "$socat_pid"`) | ✓ verified — the cleanup block; `pkill -P` is :1676, the adjacent `kill` is :1674 |
 | Persistent fd binding pattern | `terminalphone.sh:1886-1887` (`exec 3<recv; exec 4>send`) | Model for our `exec 4>` wake-FIFO holder. ✓ verified |
 
 **Honesty note for the agent:** terminalphone does its FIFO unlink at the *end of the handler
