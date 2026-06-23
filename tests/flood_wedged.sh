@@ -60,7 +60,20 @@ SHELLMUX_LEAKY_WRITE="$LEAKY" SHELLMUX_WRITE_TIMEOUT="$WTO" \
   bash "$SHELLMUX" serve "$D" --unix "$SOCK" >"$D/broker.log" 2>&1 &
 BROKER=$!
 sleep 1
-cleanup() { kill "$BROKER" 2>/dev/null; pkill -P "$BROKER" 2>/dev/null; rm -rf "$D"; }
+# Cleanup must reap BOTH the broker subtree (pkill -P) AND the client-side procs
+# this script spawns directly — the subscribers, the wedged socat, and its
+# detached `sleep 300`. Those are children of THIS script, not of $BROKER, so
+# pkill -P "$BROKER" alone leaves them orphaned; run the suite back-to-back and
+# the orphaned sleeps/subs accumulate until a later cold start contends and hangs
+# (the operator persona's ">120s / EXIT 137 on cold start" and the flaky-F1 report).
+# `pkill -P $$` sweeps every direct child of this script; we also kill the named
+# pids explicitly in case a grandchild (socat | sleep) re-parented to init.
+cleanup() {
+  kill "$BROKER" "${H1:-}" "${H2:-}" "${WEDGED:-}" 2>/dev/null
+  pkill -P "$BROKER" 2>/dev/null
+  pkill -P $$ 2>/dev/null
+  rm -rf "$D"
+}
 trap cleanup EXIT
 
 # payload: a fixed-width tag we can validate, padded to PAYLOAD_PAD bytes.
