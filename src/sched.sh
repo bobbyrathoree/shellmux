@@ -74,6 +74,23 @@ running=1
 # provides a graceful stop when a wake-FIFO read returns EOF.
 trap 'exit 0' TERM INT
 
+# A deferred filename's run_at prefix must be a non-negative integer (the broker
+# stages numeric epoch-ms; valid_deadline rejects non-numeric --at/--delay before
+# staging). But state is the filesystem, so a corrupt prefix can still appear: a
+# publisher crashed mid-write, or a raw producer wrote into the state dir. A
+# non-numeric prefix poisons the `next` arithmetic ($(( next - now ))) and, under
+# `set -u`, killed the whole scheduler — one bad file blocking every pending
+# record (a global-liveness DoS). is_numeric() lets scan_min/fire_due SKIP such a
+# record instead of dying: a corrupt file costs one scan-skip, never a halt — the
+# same robustness posture as "a spurious/dropped wake costs one scan, never a
+# missed message." SCHED_NO_SKIP_CORRUPT=1 disables the guard (the one-knob
+# must-fail control, tests/corrupt_deferred.sh C1'): the crash returns, proving
+# the guard is load-bearing.
+is_numeric() {
+  [ "${SCHED_NO_SKIP_CORRUPT:-0}" = "1" ] && return 0
+  case "$1" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac
+}
+
 # next = MIN(run_at_ms) over deferred/<run_at_ms>.<seq> filenames.
 # Echoes the min, or empty if no pending records. (honker queue_next_claim_at.)
 scan_min() {
@@ -81,6 +98,7 @@ scan_min() {
   for f in "$DIR"/deferred/*; do
     [ -e "$f" ] || continue            # glob-no-match guard
     b=${f##*/}; ra=${b%%.*}
+    is_numeric "$ra" || continue       # skip a corrupt (non-numeric) prefix
     if [ -z "$min" ] || [ "$ra" -lt "$min" ]; then min=$ra; fi
   done
   printf '%s' "$min"
@@ -109,6 +127,7 @@ fire_due() {
   for f in "$DIR"/deferred/*; do
     [ -e "$f" ] || continue
     b=${f##*/}; ra=${b%%.*}
+    is_numeric "$ra" || continue       # skip a corrupt (non-numeric) prefix
     if [ "$ra" -le "$now" ]; then
       dest="$DIR/outbox/$b"
       if mv "$f" "$dest" 2>/dev/null; then   # <-- single commit point
