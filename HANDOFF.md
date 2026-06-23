@@ -1,25 +1,27 @@
 # HANDOFF — shellmux
-Last updated: 2026-06-22 (R2 session)   |   Branch: master (clean)   |   **STATUS: COMPLETE — all 5 DoD items met; evaluator loop CONVERGED over two rounds**
+Last updated: 2026-06-22 (R3 session)   |   Branch: master (clean)   |   **STATUS: COMPLETE — all 5 DoD items met; evaluator loop CONVERGED over two rounds; spine re-proven + 2 off-axis bugs fixed this session**
 
 ## If you are a new agent, START HERE
-**The build is done and green, M0 through M5, the product-phase evaluator loop has run TWICE, and
-DoD #5 (convergence) is now MET — not parked.** The single falsifiable claim is PROVEN and
-ADVERSARIALLY RE-CONFIRMED (three independent ways this session): `tests/chaos_deadline.sh` fires
-**0 missed / 0 duplicate over N=5000** adversarial-timing trials (publish injected into the exact
-`[next=MIN → blocking read]` window every trial), at **0.00% idle CPU**, with three must-fail negative
-controls. Around it: M1 crash recovery, M2 socat-fork acceptor + per-sub FIFO + forget-on-death
-(UNIX+TCP), M3 bounded fan-out drainer (`ps` flat vs leaky control), M3b deferred `--at`/`--delay`
-firing through the scheduler, M4 GC reaper + ls/cat introspection, M5 demo + benchmarks. R1 added
-input-boundary hardening; **R2 (this session) ran a second evaluator round, measured two-round
-convergence, and landed the round-2 perimeter polish** (doc truth-up, deterministic flood test,
-scriptable arg rc). Reproduce from clean:
+**The build is done and green, M0 through M5, the product-phase evaluator loop converged over two
+rounds, and this session (R3) re-proved the spine live and fixed two real OFF-AXIS robustness bugs a
+fresh adversarial workflow found.** The single falsifiable claim is PROVEN and RE-CONFIRMED live this
+session: `tests/chaos_deadline.sh` fires **0 missed / 0 duplicate over N=5000** adversarial-timing
+trials (publish injected into the exact `[next=MIN → blocking read]` window every trial), at **0.00%
+idle CPU**, with three must-fail negative controls. Around it: M1 crash recovery, M2 socat-fork
+acceptor + per-sub FIFO + forget-on-death (UNIX+TCP), M3 bounded fan-out drainer (`ps` flat vs leaky
+control), M3b deferred `--at`/`--delay` firing through the scheduler, M4 GC reaper + ls/cat
+introspection, M5 demo + benchmarks. R1 added input-boundary hardening; R2 ran a second evaluator
+round + convergence + perimeter polish; **R3 (this session) ran a fresh 5-lens adversarial-verification
+workflow (NOT_REFUTED ×2, 0 threats to the proof axis) and fixed the two off-axis bugs it surfaced:
+(A) a corrupt deferred filename crashing the scheduler, and (B) torn frames under concurrent
+>PIPE_BUF publishers** — both test-first with must-fail controls, neither touching the proof axis.
+Reproduce from clean:
 `docker build -t shellmux-dev . && docker run --rm -v "$PWD:/work" -w /work shellmux-dev bash tests/run_all.sh`
-(**8 suites, 8/8 green**; `-e N_MAIN=400` for a ~90s pass). Demo: `DEMO.md`. Evidence: `docs/evidence/`.
+(**10 suites, 10/10 green**; `-e N_MAIN=400` for a ~90s pass). Demo: `DEMO.md`. Evidence: `docs/evidence/`.
 Evaluator artifacts: `eval/feedback/{raw,synthesis,analysis}/round-001*` and `round-002*`.
-**ALL WORK IS ON `master`, working tree clean** (the prior HANDOFF's "unmerged branch
-`chore/cleanup-and-eval-loop`" note was stale — corrected this session; everything is committed to
-`master`). The ONLY remaining optional, non-blocking item is re-measuring benchmarks on a real $5 Pi
-(correctness properties are hardware-independent; only the throughput ceiling needs the real box).
+**ALL WORK IS ON `master`, working tree clean.** The ONLY remaining optional, non-blocking item is
+re-measuring benchmarks on a real $5 Pi (correctness properties are hardware-independent; only the
+throughput ceiling needs the real box).
 
 ## Done (with commit shas)
 - Repo scaffolded (commit aeb9198 + e871e52 + e602872).
@@ -144,10 +146,47 @@ Evaluator artifacts: `eval/feedback/{raw,synthesis,analysis}/round-001*` and `ro
   - Doc line-count reconciled to 458 across README/DEMO/spec; fixed a stale spec.md `src/shellmux`
     figure (still said 374 pre-R1) caught while truthing up.
   - **NO REGRESSION:** full `run_all.sh` 8/8 green, chaos missed=0 dup=0 ontime=5000 over N=5000.
+- **R3 — capstone adversarial re-verification + two off-axis bug fixes: DONE.** (commits a89f61f, 896b1b9)
+  - Re-proved the spine from a clean state (smoke 3/3, chaos full N=5000 → 0/0 with all 3 controls,
+    idle 0.00%, run_all 8/8) — the prior COMPLETE stamp re-confirmed live, not trusted.
+  - Ran a fresh **5-lens adversarial-verification workflow** (spine-race-corners, data-plane,
+    crash-recovery, prior-art, doc-honesty), each lens RUNNING its attack live in the container, with
+    an independent cross-examination of every flagged finding. Result: **not_refuted=2, bugs_found=3,
+    refuted=0, proof_axis_threats=0.** The claim was re-confirmed three independent ways (my N=5000
+    run + the spine-race lens's 8×1000 free-running concurrency → 0/0 + the prior-art lens's own
+    chaos re-run); NO finding touched the missed=0/dup=0/zero-idle-CPU axis.
+  - **`seq=${RANDOM}${RANDOM}` collision finding — REFUTED (documented non-bug).** Two agents claimed
+    ~1/2500 silent loss among concurrent same-`run_at_ms` publishes; their repro used `( )` subshells
+    (inherit parent RANDOM seed → correlated → 1/5000). socat `,fork`+`EXEC:` execvp's a FRESH bash
+    that reseeds RANDOM per process; the faithful model (`bash -c`/`xargs -P`) measured **0 collisions
+    over 20000**. Left the code as-is (no needless BASHPID churn). Lesson: model the actual spawn
+    mechanism before believing a repro.
+  - **Bug A (fixed): corrupt deferred filename → scheduler DoS.** `deferred/<non-numeric>.<seq>`
+    (crash-mid-write, or a raw producer writing into the FS-native state dir) poisoned `next=MIN`:
+    `scan_min` assigned the bareword into `$min`, the loop's `$(( next - now ))` hit `set -u` →
+    `unbound variable` → scheduler DIED; one bad file blocked every other pending record (global-
+    liveness DoS, deterministic across restarts). NOT reachable through the validated broker. Fix:
+    `is_numeric()` guards `scan_min`+`fire_due` to SKIP a non-numeric prefix (a corrupt file costs one
+    scan-skip, never a halt — same posture as "a spurious wake costs one scan, never a missed
+    message"). `tests/corrupt_deferred.sh` C1 + must-fail control C1' (`SCHED_NO_SKIP_CORRUPT=1`).
+  - **Bug B (fixed): torn frames under concurrent >PIPE_BUF publishers.** `fanout()` wrote each frame
+    with a fresh `open()`+`write()`; a FIFO write is atomic only ≤ PIPE_BUF (4096B), so two+ concurrent
+    socat-forked publishers fanning records >PIPE_BUF to the SAME sub interleaved their bytes and a
+    torn/concatenated frame slipped past the drainer's short-read guard to a HEALTHY sub (verified
+    6 pubs × 6000B → corrupt=2/run). Contradicted the spec's length-prefix "not concatenated"
+    guarantee + flood_wedged F4 (only ever 1 publisher, <PIPE_BUF). Fix: serialize each per-FIFO write
+    under a **per-subscriber** `flock` (`.wlock_<pid>`) — atomic per sub, parallel across subs (wedged
+    peer never blocks healthy; M3 isolation preserved), still `timeout`-bounded (backpressure contract
+    unchanged). `_reap` sweeps stale `.wlock_<pid>` like `drops_<pid>` (introspection I5 asserts).
+    `tests/concurrent_frames.sh` G1 + must-fail control G1' (`SHELLMUX_NO_WLOCK=1`).
+  - Docs truthed up: README/DEMO/spec → 10 suites, line counts 186 / 481, frame-integrity guarantee +
+    corrupt-deferred robustness note; spec.md got an "R3 hardening" paragraph.
+  - **NO REGRESSION:** full `run_all.sh` **10/10 green**, chaos missed=0 dup=0 ontime=5000 over N=5000,
+    flood_wedged 4/4. Neither fix touches `src/sched.sh`'s mv commit point or the wake discipline.
 
 ## In progress (exact state)
-- Nothing mid-edit. ALL milestones (M0–M5) closed; DoD #5 converged over two rounds; every suite
-  green (8/8); docs reconciled to code; all work committed to `master` (clean tree).
+- Nothing mid-edit. ALL milestones (M0–M5) + R1/R2/R3 closed; DoD #5 converged over two rounds; every
+  suite green (10/10); docs reconciled to code; all work committed to `master` (clean tree).
 
 ## Open / optional (NOT blockers — ALL 5 Definition-of-Done items are met)
 - **Evaluator loop (PROMPT §4, DoD #5): CONVERGED over two rounds — DONE, not parked.** Round-001
@@ -161,25 +200,31 @@ Evaluator artifacts: `eval/feedback/{raw,synthesis,analysis}/round-001*` and `ro
   as such; re-measure on a real $5 Pi before quoting on a slide (correctness properties are
   hardware-independent; the throughput ceiling is not). DEMO states the ceiling is RAM-bound
   (~2.4MB/sub, ~100–150 on a 512MB Pi). Not a blocker for the proof or the demo.
-- **Line-budget:** `src/shellmux` is now 458 lines (374 pre-R1; +78 input validation, +6 R2 arg-rc).
-  Still honest in DEMO/spec ("~150" = the scheduler `src/sched.sh` at 167, the contribution; the
+- **Line-budget:** `src/shellmux` is now 481 lines (374 pre-R1; +78 input validation, +6 R2 arg-rc, +21 R3 frame-lock+corrupt-skip); `src/sched.sh` is 186.
+  Still honest in DEMO/spec ("~150" = the scheduler `src/sched.sh` at 186, the contribution; the
   broker is plumbing). Trim is optional.
 
-## Adversarial verification — DONE (PROMPT §3/§7.2): claim SURVIVES
-- 4 skeptic lenses (correctness, negative-control, prior-art-fidelity, measurement-validity) each
-  told to *refute* the 0/0 claim → **4/4 returned HOLDS at high confidence; none refuted.**
+## Adversarial verification — DONE (PROMPT §3/§7.2): claim SURVIVES (re-confirmed R3)
+- **R1/M0:** 4 skeptic lenses (correctness, negative-control, prior-art-fidelity, measurement-validity)
+  each told to *refute* the 0/0 claim → **4/4 returned HOLDS; none refuted.** (docs/evidence/M0-adversarial-verdict.md)
+- **R3 (this session):** a fresh **5-lens** workflow (spine-race-corners, data-plane, crash-recovery,
+  prior-art, doc-honesty), each RUNNING its attack live + independent cross-examination →
+  **not_refuted=2, bugs_found=3, refuted=0, proof_axis_threats=0.** The 3 bugs are all OFF-axis;
+  2 were real and fixed (corrupt-deferred DoS, concurrent-frame interleave), 1 (`${RANDOM}${RANDOM}`
+  collision) was REFUTED as a subshell-vs-fresh-exec repro artifact (0 collisions over 20000 with the
+  faithful socat-fork model). Spine re-confirmed 3 ways (my N=5000, the spine-race 8×1000 free-running,
+  the prior-art lens's own chaos re-run).
 - Two recurring "major" concerns probed independently and settled (docs/evidence/M0-adversarial-verdict.md):
   (1) 0.00% idle CPU is real — scheduler sits in kernel `do_select` (state S), 0 ticks over 3s.
   (2) tightening grace 1000ms→50ms still passes missed=0 → fires are wake-driven (ms), not poll-floor.
-- Limitations the skeptics surfaced, to carry forward (not blockers): re-measure latency on the Pi
-  at M5; crash-mid-`mv` at-most-once is M1's job to test; ms-vs-~1s resolution wording could be crisper.
+- Limitations the skeptics surfaced, to carry forward (not blockers): re-measure latency on the Pi;
+  crash-mid-`mv` at-most-once is M1-tested; ms-vs-~1s resolution wording could be crisper.
 
 ## Next (ordered)
-All build milestones (M0–M5) are DONE and all 5 DoD items are met (evaluator loop CONVERGED over
-two rounds this session). The ONLY remaining work is optional and non-blocking: re-measure
-benchmarks on a real $5 Pi (correctness is hardware-independent; only the throughput ceiling needs
-the box). A round-003 evaluator pass is NOT needed for correctness — run it only if iterating on
-ergonomics. See "Open / optional" above.
+All build milestones (M0–M5) + R1/R2/R3 are DONE and all 5 DoD items are met. The ONLY remaining work
+is optional and non-blocking: re-measure benchmarks on a real $5 Pi (correctness is
+hardware-independent; only the throughput ceiling needs the box). A round-003 evaluator pass is NOT
+needed for correctness — run it only if iterating on ergonomics. See "Open / optional" above.
 
 ## Decisions & rationale (so nobody relitigates them)
 - **Wake reader uses `read -N 1`, NOT line mode.** A poke is a single newline-less byte; a

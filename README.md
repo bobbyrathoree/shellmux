@@ -1,7 +1,7 @@
 # shellmux
 
 **A content-blind topic pub/sub broker built from `socat` + FIFOs + `flock` — whose one hard part is
-a deadline scheduler (`src/sched.sh`, 167 lines — one screen) that fires timed messages race-free
+a deadline scheduler (`src/sched.sh`, 186 lines — one screen) that fires timed messages race-free
 against concurrent publishes, with ~0% idle CPU and no timer wheel.**
 
 > Wow line: *A POSIX-ish shell broker that fires a `--delay 5` message on the exact second while
@@ -19,7 +19,7 @@ and tested. Reproduce from a clean checkout:
 
 ```bash
 docker build -t shellmux-dev .
-docker run --rm -v "$PWD:/work" -w /work shellmux-dev bash tests/run_all.sh   # all 8 suites
+docker run --rm -v "$PWD:/work" -w /work shellmux-dev bash tests/run_all.sh   # all 10 suites
 # fast pass (~90s):  ... -e N_MAIN=400 bash tests/run_all.sh
 ```
 
@@ -79,15 +79,17 @@ eval/
 DEMO.md                    ← the 1-page demo script (what to run, what the judge sees)
 HANDOFF.md                 ← current state, decisions, dead-ends (the project's brain)
 src/
-  sched.sh                 ← the deadline scheduler (THE contribution), 167 lines
-  shellmux                 ← the broker: serve/sub/pub + fan-out + drainer + reaper + input validation, 458 lines
+  sched.sh                 ← the deadline scheduler (THE contribution), 186 lines
+  shellmux                 ← the broker: serve/sub/pub + fan-out + drainer + reaper + input validation, 481 lines
 tests/
   chaos_deadline.sh        ← M0 GATE: 0 missed/0 dup over N≥5000 + 3 must-fail controls
   smoke.sh                 ← M0 tracer smoke
   crash_recovery.sh        ← M1 deferred re-arm + outbox recovery
   sub_lifecycle.sh         ← M2 SUB register / forget-on-death / TCP
   flood_wedged.sh          ← M3 bounded fan-out (ps flat) + leaky must-fail control
+  concurrent_frames.sh     ← R3 frame integrity under concurrent >PIPE_BUF publishers + no-wlock control
   deferred_pub.sh          ← M3b --delay/--at fire at the deadline + fire-now control
+  corrupt_deferred.sh      ← R3 scheduler survives a corrupt deferred filename + no-skip control
   introspection.sh         ← M4 ls/cat state + GC reaper
   input_validation.sh      ← R1 reject hostile --at/--delay + topic names + NO_VALIDATE control
   bench.sh                 ← throughput + footprint

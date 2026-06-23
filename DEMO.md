@@ -103,7 +103,7 @@ topic has none — hence the `2>/dev/null || echo "no drops"`.
 ## Run everything
 
 ```bash
-bash tests/run_all.sh                # all 8 suites, each with its must-fail control
+bash tests/run_all.sh                # all 10 suites, each with its must-fail control
 N_MAIN=400 bash tests/run_all.sh     # fast (~90s)
 bash tests/bench.sh                  # throughput + footprint
 ```
@@ -140,7 +140,13 @@ actual box before quoting a number on a slide.
   one per line — not one truncated record, not one multi-line blob), while an
   unterminated trailing line waits for a newline before it is delivered.
   "Content-blind" means the broker never *parses* your payload — not that it
-  preserves arbitrary bytes.
+  preserves arbitrary bytes. **Frame integrity holds under concurrent publishers,
+  including records larger than PIPE_BUF (4 KiB):** each per-subscriber fan-out
+  write is serialized under a per-sub `flock`, so two publishers streaming big
+  records to the same subscriber can't interleave bytes into a torn/concatenated
+  frame. The lock is per-subscriber (not global), so a wedged peer still never
+  blocks a healthy one (`tests/concurrent_frames.sh`, `SHELLMUX_NO_WLOCK=1`
+  must-fail control).
 - **Not a serious broker.** No persistence, acks, wildcards, auth/TLS (delegate
   to `socat OPENSSL`/SSH), or clustering. **No retained delivery, by design:** a
   message is delivered only to subscribers connected *at publish time* — a
@@ -157,8 +163,9 @@ actual box before quoting a number on a slide.
   (default 1yr) or the publish returns nonzero with a reason. The data path that
   *derives* the scheduler's deadlines is validated before it reaches the proven
   core (`tests/input_validation.sh`, `SHELLMUX_NO_VALIDATE=1` must-fail control).
-- **Line count:** `src/sched.sh` is 167 lines; `src/shellmux` is 458 (fan-out +
-  bounded drainer + deferred PUB + client helpers + reaper + input validation).
+- **Line count:** `src/sched.sh` is 186 lines; `src/shellmux` is 481 (fan-out +
+  bounded drainer + deferred PUB + client helpers + reaper + input validation +
+  the corrupt-deferred skip guard and the per-sub fan-out write lock added in R3).
   The "~150 lines" pitch is the *scheduler*, which is the contribution; the
   broker around it is honest plumbing.
 

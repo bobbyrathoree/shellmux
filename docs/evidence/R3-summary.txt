@@ -1,0 +1,24 @@
+R3 (2026-06-22) — capstone adversarial re-verification + two off-axis bug fixes
+
+SPINE RE-PROVEN LIVE (after both fixes, current tree):
+  chaos_deadline.sh  N=5000  -> missed=0 dup=0 ontime=5000 total_fires=5000  PASS
+  negative controls:  naivesleep missed=120/120, drainfirst missed=120/120, nocommit dup=1770
+  idle CPU 0.00%
+  full run_all.sh -> 10/10 suites green (8 prior + corrupt_deferred + concurrent_frames)
+
+ADVERSARIAL WORKFLOW (5 lenses, each ran its attack live + independent cross-exam):
+  summary = { not_refuted: 2, bugs_found: 3, refuted: 0, proof_axis_threats: 0 }
+  - spine-race-corners : NOT_REFUTED (8x1000 free-running concurrency -> 0/0; idle_poll boundary; same-ms; spurious-then-real)
+  - doc-vs-code        : NOT_REFUTED (line-split, NUL-strip, do_select 0 ticks, silent tail-loss, at-most-once all match)
+  - crash-recovery     : BUG_FOUND (off-axis) -> corrupt deferred filename DoS  [FIXED]
+  - data-plane         : BUG_FOUND (off-axis) -> torn frames, concurrent >PIPE_BUF  [FIXED]
+  - prior-art          : BUG_FOUND-labelled seq collision -> REFUTED by me (subshell repro artifact)
+
+FIXES (test-first, each with a must-fail control; neither touches the mv commit point or wake discipline):
+  A. src/sched.sh  is_numeric() guard in scan_min+fire_due   (control SCHED_NO_SKIP_CORRUPT=1)  tests/corrupt_deferred.sh
+  B. src/shellmux  per-subscriber flock around fan-out write  (control SHELLMUX_NO_WLOCK=1)      tests/concurrent_frames.sh
+     _reap sweeps stale .wlock_<pid>; introspection.sh I5 asserts it.
+
+REFUTED FINDING (documented non-bug):
+  seq="${RANDOM}${RANDOM}" collision: agents used ( ) subshells (inherit RANDOM seed -> ~1/5000).
+  socat ,fork + EXEC: execvp's a fresh bash (reseeds RANDOM) -> 0 collisions over 20000. Production path safe.

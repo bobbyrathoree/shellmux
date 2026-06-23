@@ -75,16 +75,32 @@ We default to (1) and benchmark both on a real Pi.
 **Build sequence:** (1) deadline scheduler + chaos test FIRST (the hard, provable core); (2) socat-fork acceptor + SUB handler + ring drainer; (3) length-prefixed fan-out + drop counter; (4) `EXIT`-trap + `[ -p ]` death path; (5) deferred crash recovery + topic GC reaper; (6) demo + benchmarks on the Pi.
 
 **As-built note (honesty reconciliation, post-implementation).** The "~150 lines / one screen"
-figure is the size of the *contribution* — `src/sched.sh` is **167 lines**. The full broker
+figure is the size of the *contribution* — `src/sched.sh` is **186 lines**. The full broker
 `src/shellmux` (acceptor + SUB/PUB + bounded-drainer fan-out + deferred-PUB wiring + client helpers +
-GC reaper + input validation) is **458 lines** (374 pre-R1; +78 for the input-boundary gates that
-validate the data path deriving the deadlines, +6 for the round-002 arg-rc split). The pitch should say "the scheduler is one screen", not "the whole
+GC reaper + input validation) is **481 lines** (374 pre-R1; +78 for the input-boundary gates that
+validate the data path deriving the deadlines, +6 for the round-002 arg-rc split, +21 for the R3
+per-subscriber fan-out write lock and the corrupt-deferred skip guard). The pitch should say "the scheduler is one screen", not "the whole
 broker". The wedged-flood beat is as-built true: healthy subscribers receive the full flood while a
 wedged peer's `drops_$pid` ticks up and `ps --ppid $PUB` stays flat (~15 vs a leaky control's ~1300).
 The bounded write is **not fork-free** (each is a `timeout bash -c`, ~0.5–10ms on the dev host); the
 proven claim is *no per-message process accumulation*, not "zero forks". Backpressure remains lossy
 and best-effort, exposed via `drops_$pid` — never silent, never claimed lossless. All other spec
 claims held as written.
+
+**R3 hardening (post-round-2 adversarial-verification pass).** A fresh 5-lens adversarial workflow
+(spine race-corners, data-plane, crash-recovery, prior-art, doc-honesty) re-confirmed the missed=0/dup=0
+proof live (NOT-REFUTED, 0 threats to the proof axis) and surfaced two real *off-axis* robustness bugs,
+both fixed test-first with must-fail controls: (1) a corrupt deferred filename (non-numeric `run_at`
+prefix — reachable only by a raw producer writing into the filesystem-native state dir, NOT through the
+validated broker) crashed the scheduler under `set -u`, a global-liveness DoS — now skipped per the
+"a spurious wake costs one scan, never a missed message" posture (`tests/corrupt_deferred.sh`);
+(2) two concurrent publishers fanning records **larger than PIPE_BUF (4 KiB)** to the same subscriber
+could interleave bytes into a torn/concatenated frame that reached a *healthy* subscriber — the
+length-prefix short-read guard alone did not cover the concurrent-large-write case. Fan-out writes are
+now serialized under a **per-subscriber** `flock` (atomic per sub, parallel across subs, still
+`timeout`-bounded so the backpressure contract and wedged-vs-healthy isolation are unchanged) —
+`tests/concurrent_frames.sh`. Neither touches `src/sched.sh`'s `mv` commit point or the wake
+discipline; chaos re-ran `missed=0 dup=0` over N=5000 after both.
 
 ## The Demo
 
