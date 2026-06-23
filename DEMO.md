@@ -49,11 +49,13 @@ are shown to **fail** on their predicted axis. This survived an adversarial
 
 ```bash
 D=$(mktemp -d); SOCK=$D/s.sock
-bash src/shellmux serve "$D" --unix "$SOCK" &        # no config
-bash src/shellmux sub  "$D" control --unix "$SOCK" & # a subscriber
+bash src/shellmux serve "$D" --unix "$SOCK" &  BROKER=$!   # no config
+bash src/shellmux sub  "$D" control --unix "$SOCK" &  SUBSC=$!  # a subscriber
 echo reboot-now | bash src/shellmux pub "$D" control --delay 5 --unix "$SOCK"
 # top shows ~0% the whole 5s; the line lands on the second.
 ls "$D"/deferred/      # the pending deadline, as a filename: <run_at_ms>.<seq>
+# teardown (reap the broker subtree + the subscriber; broker shutdown EOFs subs):
+kill "$SUBSC" "$BROKER" 2>/dev/null; pkill -P "$BROKER" 2>/dev/null
 ```
 
 `tests/deferred_pub.sh` proves this: `--delay`/`--at` fire **at** the deadline
@@ -67,11 +69,23 @@ bash tests/flood_wedged.sh           # ~5s
 ```
 
 Three subscribers on a topic, one deliberately **wedged** (never reads its
-socket); flood the topic. The two healthy subscribers get the **entire** flood
-at full speed; `cat drops_<wedged>` ticks up (lossy, but **visible — never
-silent**); and the publisher's process count stays **flat (~15)**. The must-fail
-control flips one knob to terminalphone's `printf > $f &` pattern and the count
-**balloons to ~1300** — the leak we replaced, made visible.
+socket); flood the topic over a single held-open connection. The two healthy
+subscribers get the whole flood at full speed *while the connection stays open*;
+the wedged subscriber's ring overflows and `cat drops_<wedged>` ticks up (that
+overload loss is **visible — counted, never silent**); and the publisher's process
+count stays **flat (~15)**. The must-fail control flips one knob to terminalphone's
+`printf > $f &` pattern and the count **balloons to ~1300** — the leak we replaced,
+made visible.
+
+> *Honest caveat (the one loss that is NOT counted):* the `drops_<pid>` counter
+> covers the wedged-subscriber **ring-overflow** path. A different, inherent loss is
+> NOT counted — if a fast publisher **closes its connection before the broker has
+> finished ingesting an in-flight burst**, the unflushed tail is gone (fork-per-
+> connection socat: when the source closes, unread bytes vanish), with no `drops`
+> tick and nothing in `broker.log`. Hold the connection briefly after the last write
+> (the `pub` helper lingers `SHELLMUX_PUB_LINGER`s, default 1, for exactly this), or
+> treat fast-disconnect tail loss as expected. So "never silent" is true for
+> backpressure overflow, not for publisher-disconnect truncation.
 
 ## Beat 4 — the whole broker is `ls` and `cat`
 
@@ -121,23 +135,29 @@ actual box before quoting a number on a slide.
   timers need bash≥4 fractional `read -t` (whole-second floor on bash3/dash —
   faithful to honker's own `Duration::from_secs`).
 - **Not binary-clean transport.** A record is **one newline-delimited line of
-  NUL-free text**: NUL bytes are stripped, a payload is truncated at its first
-  newline, and an unterminated payload isn't delivered until a newline arrives.
+  NUL-free text**: NUL bytes are stripped, and **each newline-terminated line is
+  delivered as its own separate record** (a multi-line payload fans out as N records,
+  one per line — not one truncated record, not one multi-line blob), while an
+  unterminated trailing line waits for a newline before it is delivered.
   "Content-blind" means the broker never *parses* your payload — not that it
   preserves arbitrary bytes.
 - **Not a serious broker.** No persistence, acks, wildcards, auth/TLS (delegate
-  to `socat OPENSSL`/SSH), or clustering. **At-most-once-modulo-crash, by design:**
-  a deferred message whose deadline elapsed while the broker was down fires
-  immediately on restart into whoever is connected *then* — with no retained
-  delivery, a subscriber that reconnects later does not receive it. That's the
-  expected face of the guarantee, not a bug.
+  to `socat OPENSSL`/SSH), or clustering. **No retained delivery, by design:** a
+  message is delivered only to subscribers connected *at publish time* — a
+  subscriber that is offline during a live publish (even with the broker healthy)
+  permanently misses it; there is no replay. The crash face of this is
+  **at-most-once-modulo-crash:** a deferred message whose deadline elapsed while the
+  broker was down fires immediately on restart into whoever is connected *then* — a
+  subscriber that reconnects later does not receive it (and if the deadline is
+  already overdue at restart, it can fire before *any* subscriber reconnects, racing
+  them). That's the expected face of the guarantee, not a bug.
 - **Hostile input is rejected, not silently mishandled.** Topic names are
   `[A-Za-z0-9._-]+` (no `../` traversal that `mkdir`s outside the state dir);
   `--at`/`--delay` must be a non-negative integer within `SHELLMUX_MAX_DEFER_S`
   (default 1yr) or the publish returns nonzero with a reason. The data path that
   *derives* the scheduler's deadlines is validated before it reaches the proven
   core (`tests/input_validation.sh`, `SHELLMUX_NO_VALIDATE=1` must-fail control).
-- **Line count:** `src/sched.sh` is 167 lines; `src/shellmux` is 452 (fan-out +
+- **Line count:** `src/sched.sh` is 167 lines; `src/shellmux` is 458 (fan-out +
   bounded drainer + deferred PUB + client helpers + reaper + input validation).
   The "~150 lines" pitch is the *scheduler*, which is the contribution; the
   broker around it is honest plumbing.

@@ -10,7 +10,7 @@
 #   socat-fork acceptor      terminalphone.sh:1206/1350  (we use EXEC: + ,fork)
 #   per-client FIFO + drainer terminalphone.sh:1518-1546
 #   [ -p ]-guarded fan-out    terminalphone.sh:1567-1572
-#   pkill -P cleanup          terminalphone.sh:1674
+#   pkill -P cleanup          terminalphone.sh:1674-1676
 # We REPLACE terminalphone's `printf ... > $f &` blocking-write-backgrounded
 # leak (terminalphone.sh:1570) — see M3 bounded ring drainer.
 #
@@ -356,7 +356,7 @@ serve() {
 
   # Broker shutdown = fail-loud-for-all: reap the scheduler and every forked
   # handler so subscribers get EOF and reconnect (honker WatcherDeathGuard::drop,
-  # honker-core/src/lib.rs:908-916; pkill -P shape terminalphone.sh:1674).
+  # honker-core/src/lib.rs:908-916; pkill -P shape terminalphone.sh:1674-1676).
   shutdown() { local p; for p in "${pids[@]}"; do pkill -P "$p" 2>/dev/null; kill "$p" 2>/dev/null; done; exit 0; }
   trap shutdown TERM INT
   wait
@@ -366,15 +366,21 @@ serve() {
 # client helpers — sub/pub just connect a socat to the broker and speak the
 # one-line control protocol. <dir> is accepted for symmetry but unused client-side.
 # ---------------------------------------------------------------------------
-# usage <verb> — print the one-line invocation for a client verb and exit 0.
+# usage <verb> [rc] — print the one-line invocation for a client verb and exit.
 # Guards `sub`/`pub` against `--help`/`-h`/too-few-args, which otherwise tripped
 # `local dir="$1" topic="$2"` under `set -u` (F4: `$2: unbound variable`).
+# rc defaults to 0 (explicit `--help`/`-h` is success); a MISSING-required-arg
+# call passes rc=2 and prints to stderr, so a scripter can branch on `$?` and
+# distinguish "I forgot args" (2) from a happy `--help` (0) and a bad subcommand
+# (1, via die) — round-002 N4. The text goes to stdout for help, stderr for error.
 usage() {
-  case "$1" in
-    sub) printf 'usage: shellmux sub <dir> <topic> [--unix <path>|--tcp <port>]\n' ;;
-    pub) printf 'usage: shellmux pub <dir> <topic> [--at <epoch>|--delay <s>] [--unix <path>|--tcp <port>]\n' ;;
+  local verb="$1" rc="${2:-0}" out=1
+  [ "$rc" -ne 0 ] && out=2
+  case "$verb" in
+    sub) printf 'usage: shellmux sub <dir> <topic> [--unix <path>|--tcp <port>]\n' >&"$out" ;;
+    pub) printf 'usage: shellmux pub <dir> <topic> [--at <epoch>|--delay <s>] [--unix <path>|--tcp <port>]\n' >&"$out" ;;
   esac
-  exit 0
+  exit "$rc"
 }
 
 _endpoint() { # echoes the socat address from --unix/--tcp args
@@ -389,8 +395,8 @@ _endpoint() { # echoes the socat address from --unix/--tcp args
 }
 
 sub() {
-  case "${1:-}" in -h|--help|'') usage sub ;; esac
-  [ $# -ge 2 ] || usage sub
+  case "${1:-}" in -h|--help) usage sub ;; esac        # explicit help: rc 0, stdout
+  [ $# -ge 2 ] || usage sub 2                           # missing required args: rc 2, stderr
   local dir="$1" topic="$2"; shift 2
   valid_topic "$topic" || die "bad topic name (allowed: A-Za-z0-9._-, no leading dot)"
   local ep; ep="$(_endpoint "$@")" || exit 1
@@ -411,8 +417,8 @@ sub() {
 }
 
 pub() {
-  case "${1:-}" in -h|--help|'') usage pub ;; esac
-  [ $# -ge 2 ] || usage pub
+  case "${1:-}" in -h|--help) usage pub ;; esac        # explicit help: rc 0, stdout
+  [ $# -ge 2 ] || usage pub 2                           # missing required args: rc 2, stderr
   local dir="$1" topic="$2"; shift 2
   valid_topic "$topic" || die "bad topic name (allowed: A-Za-z0-9._-, no leading dot)"
   # collect --at/--delay (M3); pass remaining as the control line. Validate the

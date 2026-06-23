@@ -140,6 +140,23 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# V6 — arg-rc contract a scripter can branch on (round-002 N4). Explicit help is
+# success (rc 0, usage on STDOUT); a MISSING-required-arg invocation is an error
+# (rc 2, usage on STDERR); a bad subcommand is rc 1. Before R2, bare `pub` exited
+# 0 (printing usage), indistinguishable on `$?` from a happy `--help`.
+# ---------------------------------------------------------------------------
+bash "$SHELLMUX" sub --help >/dev/null 2>&1; rc_help=$?       # explicit help -> 0
+bash "$SHELLMUX" sub        >/dev/null 2>&1; rc_noarg=$?      # missing args   -> 2
+help_on_stdout="$(bash "$SHELLMUX" pub --help 2>/dev/null)"  # help text on stdout
+err_on_stderr="$(bash "$SHELLMUX" pub 2>&1 >/dev/null)"      # error text on stderr
+if [ "$rc_help" -eq 0 ] && [ "$rc_noarg" -eq 2 ] \
+   && [ -n "$help_on_stdout" ] && [ -n "$err_on_stderr" ]; then
+  ok "V6 arg-rc contract: --help rc0/stdout, missing-arg rc2/stderr (scriptable \$?)"
+else
+  bad "V6 arg-rc contract wrong (rc_help=$rc_help rc_noarg=$rc_noarg help_stdout='${help_on_stdout:0:20}' err_stderr='${err_on_stderr:0:20}')"
+fi
+
+# ---------------------------------------------------------------------------
 # NEGATIVE CONTROL (must FAIL the fix): SHELLMUX_NO_VALIDATE=1 brings the bugs
 # back. If validation disabled does NOT reproduce a crash + traversal, the gate
 # is decorative and the V1/V4 passes prove nothing.

@@ -41,9 +41,11 @@ simplicity note, not a security feature). See `docs/prior-art.md`.
 
 A record is **one newline-delimited line of NUL-free text**. The broker parses *only* the one-line
 control header (`SUB <topic>` / `PUB <topic> [--at|--delay]`) and never inspects your payload — but
-delivery is line-oriented, so: embedded NUL bytes are stripped, a payload is truncated at its first
-newline, and a record with **no trailing newline is not delivered** until one arrives. This is the
-honest contract — text records, one per line — not arbitrary-binary transport. (Crash semantics are
+delivery is line-oriented, so: embedded NUL bytes are stripped, **each newline-terminated line you
+publish is delivered as its own separate record** (a multi-line payload fans out as N records, one
+per line — not one truncated record and not one multi-line blob), and a trailing line with **no
+terminating newline is not delivered** until one arrives. This is the honest contract — text records,
+one per line — not arbitrary-binary transport. (Crash semantics are
 **at-most-once-modulo-crash**: a deferred message whose deadline elapsed while the broker was down
 fires immediately on restart into whoever is connected *then*; there is no retained delivery or
 replay. See [`DEMO.md`](./DEMO.md) "Why it's honest".)
@@ -78,7 +80,7 @@ DEMO.md                    ← the 1-page demo script (what to run, what the jud
 HANDOFF.md                 ← current state, decisions, dead-ends (the project's brain)
 src/
   sched.sh                 ← the deadline scheduler (THE contribution), 167 lines
-  shellmux                 ← the broker: serve/sub/pub + fan-out + drainer + reaper + input validation, 452 lines
+  shellmux                 ← the broker: serve/sub/pub + fan-out + drainer + reaper + input validation, 458 lines
 tests/
   chaos_deadline.sh        ← M0 GATE: 0 missed/0 dup over N≥5000 + 3 must-fail controls
   smoke.sh                 ← M0 tracer smoke
