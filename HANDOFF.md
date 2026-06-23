@@ -196,10 +196,20 @@ throughput ceiling needs the real box).
   round-003 would, by the analyst's call, mostly re-report doc-wording and re-state punts — run it
   only if iterating on ergonomics, not for correctness signal. See
   `eval/feedback/analysis/round-002.md` for the explicit convergence call.
-- **Pi benchmarks (the one genuine remaining follow-up):** numbers are container-measured and labelled
-  as such; re-measure on a real $5 Pi before quoting on a slide (correctness properties are
-  hardware-independent; the throughput ceiling is not). DEMO states the ceiling is RAM-bound
-  (~2.4MB/sub, ~100–150 on a 512MB Pi). Not a blocker for the proof or the demo.
+- **Real-hardware benchmarks: DONE on AWS Graviton (ARM64) bare metal — the Pi follow-up is closed.**
+  (R3, `docs/evidence/R3-aws-graviton.md` + `R3-aws-graviton-t4g.small.txt`.) Ran the full suite +
+  bench + a subscriber-ceiling probe on a 2 GB **t4g.small** and a 0.5 GB **t4g.nano** (≈ Pi RAM),
+  bare AL2023 with the real dep set (no Docker), then **tore down all AWS resources** (instances,
+  bucket, IAM, SG). Findings: **chaos N=5000 = 0/0 at 0.00% idle CPU on BOTH boxes** (correctness
+  hardware-independence demonstrated, not just asserted — kills the "never left the container" nit);
+  throughput is **fork-bound ~52-60 msg/s/sub on 2 vCPU** (~20× below the 14-core container — quote
+  THIS for small hardware); subscriber ceiling is RAM-bound **~2.6 MB/sub, ~150-175 subs on the
+  0.5 GB box before OOM** (validates the "~100-150 on a 512 MB Pi" claim). The nano's `flood_wedged`
+  went 3/1 (one healthy sub got 999/1000) purely because the kernel OOM-killer was active mid-run
+  (`dmesg` confirms) — graceful best-effort degradation, NOT a broker defect; the spine held 0/0 on
+  the same box, and the 2 GB box was 10/10. Graviton cores are faster than a Pi's, so the throughputs
+  are an upper bound for an actual Pi; the RAM ceiling transfers directly. An actual $5 Pi run would
+  only refine the throughput number further down — no longer a blocker or a credibility gap.
 - **Line-budget:** `src/shellmux` is now 481 lines (374 pre-R1; +78 input validation, +6 R2 arg-rc, +21 R3 frame-lock+corrupt-skip); `src/sched.sh` is 186.
   Still honest in DEMO/spec ("~150" = the scheduler `src/sched.sh` at 186, the contribution; the
   broker is plumbing). Trim is optional.

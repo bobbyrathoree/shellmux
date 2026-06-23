@@ -108,19 +108,34 @@ N_MAIN=400 bash tests/run_all.sh     # fast (~90s)
 bash tests/bench.sh                  # throughput + footprint
 ```
 
-## Measured numbers (container — the Pi will be slower; measure there for a slide)
+## Measured numbers
+
+**Correctness is hardware-independent and re-proven on real ARM64.** The N=5000 chaos
+gate fires `missed=0 dup=0` at 0.00% idle CPU on the 14-core dev container, on a
+2 GB AWS Graviton box, AND on a 0.5 GB Graviton box *under active OOM pressure* —
+identical result every time (`docs/evidence/R3-aws-graviton.md`).
+
+Throughput and the subscriber ceiling are hardware-DEPENDENT — state the platform:
 
 ```
-Linux aarch64, bash 5.2, nproc=14
-B1  immediate publish:  1 sub  ~1360 msg/s ;  3 subs ~480 msg/s/sub (~1440 aggregate)
-B2  idle scheduler:     0 CPU ticks over 3s (~0%)
-B3  20 subscribers:     20 FIFOs, ~110 procs (~5 procs + ~2.4MB RAM per sub)
+Dev container (Linux aarch64, bash 5.2, 14 vCPU):
+  B1  immediate publish:  1 sub ~1360 msg/s ;  3 subs ~480 msg/s/sub
+  B2  idle scheduler:     0 CPU ticks over 3s (~0%)
+  B3  20 subscribers:     20 FIFOs, ~110 procs (~5 procs + ~2.4 MB RAM per sub)
+
+AWS Graviton bare metal (ARM64, AL2023, real dep set — NOT a container):
+  t4g.small (2 vCPU): B1 ~52-60 msg/s/sub ; idle 0 ticks ; 400 subs linear, sched RSS 3.4 MB
+  t4g.nano  (2 vCPU, 0.5 GB ≈ Pi RAM): B1 ~54-59 msg/s/sub ; ceiling ~150-175 subs then OOM
 ```
 
-The subscriber ceiling is **RAM-bound** (~2.4 MB/sub: socat + handler + drainer),
-not fd- or pid-bound (the broker holds only a handful of fds; `ulimit -n` is ~1M).
-On a 512 MB Pi that wall bites around **~100–150 subscribers** — measure on the
-actual box before quoting a number on a slide.
+**Throughput is fork-bound** (one `timeout bash -c` per record per sub): on a 2-vCPU
+ARM box it is **tens of msg/s/sub**, ~20× below the 14-core container — so quote the
+small-hardware figure, not the container's, for a $5-Pi audience. The **subscriber
+ceiling is RAM-bound** (~2.6 MB/sub measured: socat + handler + drainer); on the
+0.5 GB Graviton box the wall bit at **~150-175 subscribers** — validating the
+"~100-150 on a 512 MB Pi" estimate on real hardware. (Graviton cores are faster than
+a Pi's, so these throughputs are an *upper* bound for an actual Pi; the RAM ceiling
+transfers directly.)
 
 ## Why it's honest (the things we do NOT claim)
 

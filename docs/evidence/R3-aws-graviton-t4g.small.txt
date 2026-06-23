@@ -1,0 +1,161 @@
+############################################################
+# shellmux measurement — AWS Graviton (ARM64), BARE METAL
+# instance: t4g.small (2 vCPU, 2 GB)
+# Linux 6.1.175-219.357.amzn2023.aarch64 aarch64 GNU/Linux
+# bash 5.2.15 | nproc=2 | MemTotal=1846 MB
+# socat version 1.7.4.2
+# date(UTC): Tue Jun 23 06:35:19 UTC 2026
+############################################################
+
+
+===== FULL SUITE (run_all.sh, N_MAIN=5000) =====
+============================================================
+ shellmux — full test suite
+ bash 5.2.15(1)-release   N_MAIN=5000
+============================================================
+
+>>> smoke.sh
+== smoke: src/sched.sh ==
+  ok   T1 due-now record fires
+  ok   T2 future record fires near deadline (delta=1ms)
+  ok   T3 fires exactly once under redundant pokes
+== smoke result: pass=3 fail=0 ==
+
+>>> chaos_deadline.sh
+============================================================
+ shellmux M0 — deadline scheduler chaos proof
+ bash 5.2.15(1)-release
+============================================================
+
+[1/5] CORRECT variant — the gate (N=5000, idle=10000ms, grace=1000ms)
+      src/sched.sh : publish lands in the [MIN,read] window every trial.
+      -> missed=0 dup=0 ontime=5000 total_fires=5000
+      PASS: missed=0 dup=0 over N=5000
+
+[2/5] NEGATIVE CONTROL: naivesleep (must MISS) — N=120
+      blind sleep ignores the wake -> fires only on the idle_poll floor.
+      -> missed=120 dup=0 ontime=0
+      PASS (control failed as required): missed=120 > 0
+
+[3/5] NEGATIVE CONTROL: drainfirst (must MISS) — N=120
+      drains the wake before blocking (honker's lost-wakeup ordering).
+      -> missed=120 dup=0 ontime=0
+      PASS (control failed as required): missed=120 > 0
+
+[4/5] NEGATIVE CONTROL: nocommit (must DUP) — N=60
+      fires in place with no mv commit point -> re-fires every rescan.
+      -> missed=0 dup=1770 ontime=60 total_fires=1830
+      PASS (control failed as required): dup=1770 > 0
+
+[5/5] IDLE CPU — correct scheduler, 5s idle sample
+      -> scheduler idle CPU = 0.00% (threshold 5.0%)
+      PASS: idle CPU 0.00% < 5.0%
+
+============================================================
+ M0 RESULT: PASS — missed=0 dup=0 over N=5000; all 3 controls
+            failed as required; idle CPU ~0.00%.
+============================================================
+
+>>> crash_recovery.sh
+== crash_recovery: src/sched.sh ==
+  ok   R1 deferred re-arm: both records fire after kill -9 + restart
+  ok   R2 outbox recovery: stranded outbox record re-fires on restart
+  ok   R2' control (must fail): no-recover variant loses the stranded outbox file
+  ok   R3 at-most-once: R3 fired 1 time(s) across one crash window (dup <= 1)
+== crash_recovery result: pass=4 fail=0 ==
+
+>>> sub_lifecycle.sh
+== sub_lifecycle: src/shellmux ==
+  ok   S1 SUB over UNIX registers topics/weather/sub_*.fifo
+  ok   S2 disconnect unlinks the FIFO (forget-on-death)
+  ok   S3 two subs isolated; killing one leaves the other's FIFO
+  ok   S4 SUB over TCP registers a FIFO
+  ok   S2' control (must strand): no-trap handler leaves the FIFO after disconnect
+== sub_lifecycle result: pass=5 fail=0 ==
+
+>>> flood_wedged.sh
+== flood_wedged: src/shellmux ==
+  (healthy subs received 1000/1000 of 1000 in ~18s; the wedged peer's
+   bounded drops do not permanently starve healthy delivery — verdict is on
+   completeness after delivery quiesced, not on wall-clock speed)
+  ok   F1 healthy subs received the ENTIRE flood despite a wedged peer (not starved)
+  ok   F2 wedged-sub overflow is visible (sum drops_*=389), never silent
+  ok   F3 publisher did NOT accumulate processes (max broker-descendants=19)
+  ok   F4 healthy sub frames are all intact/well-formed (no torn/concatenated records)
+== flood_wedged result: pass=4 fail=0 (max_descendants=19, drops=389) ==
+
+>>> concurrent_frames.sh
+== concurrent_frames: src/shellmux (PIPE_BUF=4096) ==
+  (locked: healthy sub received=360 frames, corrupt=0)
+  ok   G1 concurrent >PIPE_BUF publishers delivered ZERO torn/concatenated frames
+  (NO_WLOCK control: healthy sub received=23 frames, corrupt=2)
+  ok   G1' control (write lock disabled) delivered 2 corrupt frame(s) as required
+== concurrent_frames result: pass=2 fail=0 ==
+
+>>> deferred_pub.sh
+== deferred_pub: src/shellmux ==
+  ok   D1 --delay 1 fired AT the deadline (arrival 64ms relative — not early, not poll-late)
+  ok   D2 --at <epoch+2> delivered at the absolute deadline (arrival 43ms relative)
+  ok   D3 scheduler idle during the deferred wait (0 CPU ticks over 2s)
+  ok   D1' control (must fire early): fire-now scheduler delivered before the 5s deadline
+== deferred_pub result: pass=4 fail=0 ==
+
+>>> corrupt_deferred.sh
+== corrupt_deferred: src/sched.sh ==
+  ok   C1 corrupt deferred file skipped; valid record fired and scheduler stayed alive
+  ok   C1' control (skip disabled) DIED on the corrupt file as required (fired=0 alive=0)
+== corrupt_deferred result: pass=2 fail=0 ==
+
+>>> introspection.sh
+== introspection: src/shellmux ==
+  ok   I1 topics are directories (ls topics/ shows 'weather')
+  ok   I2 live subscriber count via ls sub_*.fifo = 1
+  ok   I3 drops_<pid> is a plain cat-able counter (=7)
+  ok   I4 deferred queue visible via ls (pending=1, next=1782196722291.703110845)
+  ok   I5' precondition: stale drops_999999, .wlock_999999 and empty topic exist before reap
+  ok   I5 reaper removed the stale drops file, stale .wlock AND the empty topic dir
+  ok   I5 reaper PRESERVED live state (live drops, live FIFO, non-empty topic)
+== introspection result: pass=7 fail=0 ==
+
+>>> input_validation.sh
+== input_validation: src/shellmux ==
+  ok   V1 malformed --at/--delay rejected (pub rc!=0, no handler crash in broker.log)
+  ok   V2 far-future --at rejected (pub rc=1, deferred/ empty)
+  ok   V3 legitimate --delay 1 still fires (validation does not over-reject)
+  ok   V4 hostile topic name created NO dir outside topics/ (traversal rejected)
+  ok   V4b legitimate topic 'weather' still registers
+  ok   V5 sub/pub --help do not crash with 'unbound variable' (rc_sub=0 rc_pub=0)
+  ok   V6 arg-rc contract: --help rc0/stdout, missing-arg rc2/stderr (scriptable $?)
+  -- negative control: SHELLMUX_NO_VALIDATE=1 must REGRESS --
+  ok   NC control regressed as required (handler_crash=1 traversal_escape=1)
+== input_validation result: pass=8 fail=0 ==
+
+============================================================
+ SUITES: pass=10 fail=0 of 10
+============================================================
+
+===== BENCHMARKS (bench.sh) =====
+B1 immediate: 2000 msgs -> 1 healthy sub(s): all got 1042/2000 in 33313ms = ~60 msg/s/sub
+B1 immediate: 2000 msgs -> 3 healthy sub(s): all got 1103/2000 in 37982ms = ~52 msg/s/sub
+B2 idle: scheduler CPU over 3s = 0 ticks (~0%); broker direct children = 3
+B3 20 concurrent subscribers: 20 FIFOs, 244 total procs in container
+   (each sub = 1 socat + 1 handler + 1 drainer; the ceiling is fd/process limits)
+
+===== SUBSCRIBER CEILING PROBE (2GB box) =====
+  subs_launched=25 registered_fifos=25 MemAvailable=1444MB total_procs=270
+  subs_launched=50 registered_fifos=50 MemAvailable=1378MB total_procs=395
+  subs_launched=75 registered_fifos=75 MemAvailable=1302MB total_procs=520
+  subs_launched=100 registered_fifos=100 MemAvailable=1236MB total_procs=645
+  subs_launched=125 registered_fifos=125 MemAvailable=1171MB total_procs=770
+  subs_launched=150 registered_fifos=150 MemAvailable=1107MB total_procs=895
+  subs_launched=175 registered_fifos=175 MemAvailable=1041MB total_procs=1020
+  subs_launched=200 registered_fifos=200 MemAvailable=978MB total_procs=1145
+  subs_launched=225 registered_fifos=225 MemAvailable=913MB total_procs=1270
+  subs_launched=250 registered_fifos=250 MemAvailable=849MB total_procs=1395
+  subs_launched=275 registered_fifos=275 MemAvailable=783MB total_procs=1519
+  subs_launched=300 registered_fifos=300 MemAvailable=718MB total_procs=1639
+  subs_launched=325 registered_fifos=325 MemAvailable=654MB total_procs=1763
+  subs_launched=350 registered_fifos=350 MemAvailable=586MB total_procs=1888
+  subs_launched=375 registered_fifos=375 MemAvailable=523MB total_procs=2013
+  subs_launched=400 registered_fifos=400 MemAvailable=468MB total_procs=2138
+  HIGH-WATER registered subscribers: 400   (sched RSS: 3368 KB)
