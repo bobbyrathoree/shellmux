@@ -109,3 +109,7 @@ docker run --rm -v "$PWD:/work" -w /work shellmux-dev bash tests/chaos_deadline.
 
 Agent onboarding and the borrowed-mechanism source map are in **[`CLAUDE.md`](./CLAUDE.md)**; the
 evaluator harness is in **[`eval/README.md`](./eval/README.md)**.
+
+## License
+
+MIT — see [`LICENSE`](./LICENSE).
