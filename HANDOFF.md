@@ -1,24 +1,25 @@
 # HANDOFF — shellmux
-Last updated: 2026-06-23 (R1 session)   |   Branch: chore/cleanup-and-eval-loop   |   **STATUS: COMPLETE (M0–M5 green) + R1 evaluator round done**
+Last updated: 2026-06-22 (R2 session)   |   Branch: master (clean)   |   **STATUS: COMPLETE — all 5 DoD items met; evaluator loop CONVERGED over two rounds**
 
 ## If you are a new agent, START HERE
-**The build is done and green, M0 through M5, and the product-phase evaluator loop (DoD #5) has now
-run.** The single falsifiable claim is PROVEN and ADVERSARIALLY RE-CONFIRMED: `tests/chaos_deadline.sh`
-fires **0 missed / 0 duplicate over N=5000** adversarial-timing trials (publish injected into the exact
+**The build is done and green, M0 through M5, the product-phase evaluator loop has run TWICE, and
+DoD #5 (convergence) is now MET — not parked.** The single falsifiable claim is PROVEN and
+ADVERSARIALLY RE-CONFIRMED (three independent ways this session): `tests/chaos_deadline.sh` fires
+**0 missed / 0 duplicate over N=5000** adversarial-timing trials (publish injected into the exact
 `[next=MIN → blocking read]` window every trial), at **0.00% idle CPU**, with three must-fail negative
-controls. In R1 an adversarial-flooder *product user* ran the full N=5000 gate live and independently
-confirmed 0/0 ("a working falsifier, not decorative"). Around it: M1 crash recovery, M2 socat-fork
-acceptor + per-sub FIFO + forget-on-death (UNIX+TCP), M3 bounded fan-out drainer (`ps` flat vs leaky
-control), M3b deferred `--at`/`--delay` firing through the scheduler, M4 GC reaper + ls/cat
-introspection, M5 demo + benchmarks. **R1 (this session) added input-boundary hardening** (the data
-path that DERIVES the deadlines was unvalidated) + fixed a flood-test orphan leak + truthed-up docs.
-Reproduce from clean:
+controls. Around it: M1 crash recovery, M2 socat-fork acceptor + per-sub FIFO + forget-on-death
+(UNIX+TCP), M3 bounded fan-out drainer (`ps` flat vs leaky control), M3b deferred `--at`/`--delay`
+firing through the scheduler, M4 GC reaper + ls/cat introspection, M5 demo + benchmarks. R1 added
+input-boundary hardening; **R2 (this session) ran a second evaluator round, measured two-round
+convergence, and landed the round-2 perimeter polish** (doc truth-up, deterministic flood test,
+scriptable arg rc). Reproduce from clean:
 `docker build -t shellmux-dev . && docker run --rm -v "$PWD:/work" -w /work shellmux-dev bash tests/run_all.sh`
-(now **8 suites**; `-e N_MAIN=400` for a ~90s pass). Demo: `DEMO.md`. Evidence: `docs/evidence/`.
-Evaluator round artifacts: `eval/feedback/{raw,synthesis,analysis}/round-001*`.
-**This work is on branch `chore/cleanup-and-eval-loop`, not yet merged to `master`.** Remaining
-optional work (NOT blockers): merge the branch; a round-2 evaluator pass (loop is at correctness-
-convergence — see round-001-delta.md); re-measure benchmarks on a real $5 Pi.
+(**8 suites, 8/8 green**; `-e N_MAIN=400` for a ~90s pass). Demo: `DEMO.md`. Evidence: `docs/evidence/`.
+Evaluator artifacts: `eval/feedback/{raw,synthesis,analysis}/round-001*` and `round-002*`.
+**ALL WORK IS ON `master`, working tree clean** (the prior HANDOFF's "unmerged branch
+`chore/cleanup-and-eval-loop`" note was stale — corrected this session; everything is committed to
+`master`). The ONLY remaining optional, non-blocking item is re-measuring benchmarks on a real $5 Pi
+(correctness properties are hardware-independent; only the throughput ceiling needs the real box).
 
 ## Done (with commit shas)
 - Repo scaffolded (commit aeb9198 + e871e52 + e602872).
@@ -107,25 +108,62 @@ convergence — see round-001-delta.md); re-measure benchmarks on a real $5 Pi.
     `cat drops_*` healthy-topic recipe (F2), line count 374→452.
   - **NO REGRESSION:** chaos still missed=0 dup=0 ontime=5000 over N=5000; all 8 suites green. The
     fix touches only the input boundary — never `src/sched.sh` or the mv commit point.
+- **R2 — second product-phase evaluator round + convergence + perimeter polish: DONE.** (this session)
+  - Ran round-002: the SAME 12 persona×challenge pairs as R1 (apples-to-apples), driving the live
+    broker in isolated Docker instances, re-testing every R1 finding + hunting new friction →
+    aggregator (synthesis) → analyst (DoD #5 convergence call). Artifacts:
+    `eval/feedback/{raw,synthesis,analysis}/round-002*`.
+  - **Result: CONVERGED.** Mean satisfaction 7.58→**8.08** (+0.50); the R1 worst pair
+    (scripter×malformed-frames) 4→9; **12/12 completed**. All R1 fixes (F1/F4/F7/H1 input boundary)
+    re-probed by 3 personas and re-confirmed FIXED. Credible new threats to the missed=0/dup=0 axis:
+    **1 (R1) → 0 (R2)**. Raw `is_new`=84% is agent self-tag inflation (6 sessions re-report the same
+    one doc nit); de-duplicated credible novelty ≈16% by count, **0% on the claim axis**. DoD #5 met.
+  - **Independent triangulation of the spine (3 ways this session):** (1) I re-ran the full N=5000
+    gate live → 0/0; (2) an adversarial-verification subagent ran 4 attacks incl. an elapsed-
+    distribution probe (8000 trials, every fire 0–5ms, never the poll floor → fires are wake-driven,
+    not grace-hidden) + confirmed idle = real `do_select` kernel block (0 ticks) → NOT-REFUTED at
+    high confidence; (3) the round-2 flooder ran the gate live → 0/0, scored it 9/10.
+  - **Citation-fidelity audit (subagent + my own re-check):** 15/16 borrowed citations exact; the
+    `:1670` bug-not-fix framing is correct (not inverted); the absent-`trap EXIT` honesty note is
+    itself honest. ONE drift fixed: `pkill -P` is terminalphone.sh **:1676**, not :1674 (which is the
+    adjacent `kill`); cited as `:1674-1676` now across CLAUDE.md/spec/design/prior-art/src headers.
+  - **Round-2 roadmap A1–A4 landed (all off the proof axis; gated on chaos still 0/0):**
+    - A1 doc truth-up: replaced the wrong "a payload is truncated at its first newline" (the broker
+      LINE-SPLITS → N records, verified by 6 personas + my own re-run) with the true line-splitting
+      contract; added the held-open-disconnect SILENT tail-loss caveat (N2, contradicted "never
+      silent"); named the healthy-broker offline-subscriber loss next to the crash qualifier. (README, DEMO)
+    - A2 made `flood_wedged.sh` F1 deterministic (N1, the one R1 regression): two test-only root
+      causes fixed — (i) fixed 3s linger truncated the publisher tail under load → hold the connection
+      open for the whole measurement + assert EVENTUAL COMPLETENESS (quiesce, not wall-clock);
+      (ii) over-aggressive 2ms drainer timeout false-dropped HEALTHY writes under contention → 20ms
+      (still 2.5× under the broker's 0.05 default; wedged path still overflows, drops ~280). Result:
+      **6/6 serial + 8/8 parallel** (the contended condition that flaked ~1/3 before). Broker UNTOUCHED.
+    - A3 scriptable arg rc (N4): `--help`/`-h` → rc 0 on stdout; missing-required-arg → rc 2 on stderr;
+      bad subcommand → rc 1. New test `input_validation.sh` V6 pins it (now 8 cases). +6 lines (452→458).
+    - A4 DEMO Beat 2 teardown line so copy-paste doesn't leak a broker/socat/sub.
+  - Doc line-count reconciled to 458 across README/DEMO/spec; fixed a stale spec.md `src/shellmux`
+    figure (still said 374 pre-R1) caught while truthing up.
+  - **NO REGRESSION:** full `run_all.sh` 8/8 green, chaos missed=0 dup=0 ontime=5000 over N=5000.
 
 ## In progress (exact state)
-- Nothing mid-edit. ALL milestones (M0–M5) closed; every suite green; docs reconciled to code.
+- Nothing mid-edit. ALL milestones (M0–M5) closed; DoD #5 converged over two rounds; every suite
+  green (8/8); docs reconciled to code; all work committed to `master` (clean tree).
 
-## Open / optional (NOT blockers — the Definition of Done's build+proof items are met)
-- **Merge `chore/cleanup-and-eval-loop` → `master`.** All R1 work (cleanup, evaluator round,
-  input-validation hardening, flood-test fix, doc truth-up) lives on this branch. Fast-forwards
-  cleanly; the tree is buildable and 8/8 green.
-- **Evaluator loop (PROMPT §4, DoD #5): product-phase round 1 DONE.** Ran 12 persona×challenge agents
-  against the live broker; findings implemented (input validation) or doc-fixed; delta measured in
-  `eval/feedback/analysis/round-001-delta.md`. The loop is at **correctness-convergence** — round 1's
-  remaining unaddressed items are all explicitly-punted scope (binary transport, replay, acks,
-  throughput), not new threats to the one claim. A round 2 would mostly re-confirm; run it only if
-  iterating on ergonomics. The spec-phase scoring was effectively done via the M0 adversarial workflow.
-- **Pi benchmarks:** numbers are container-measured and labelled as such; re-measure on a real $5 Pi
-  before quoting on a slide (the correctness properties are hardware-independent; the throughput
-  ceiling is not). DEMO now states the ceiling is RAM-bound (~2.4MB/sub, ~100–150 on a 512MB Pi).
-- **Line-budget:** `src/shellmux` is now 452 lines (was 374; +78 for input validation). Still honest
-  in DEMO/spec ("~150" = the scheduler, the contribution; the broker is plumbing). Trim is optional.
+## Open / optional (NOT blockers — ALL 5 Definition-of-Done items are met)
+- **Evaluator loop (PROMPT §4, DoD #5): CONVERGED over two rounds — DONE, not parked.** Round-001
+  surfaced the one adjacent threat (unvalidated input boundary) + a test flake; both fixed. Round-002
+  re-probed and re-confirmed them fixed and found **zero new threats to the one claim** (credible
+  novelty 1→0 on the claim axis; satisfaction 7.58→8.08). Round-2's roadmap (A1–A4) is landed. A
+  round-003 would, by the analyst's call, mostly re-report doc-wording and re-state punts — run it
+  only if iterating on ergonomics, not for correctness signal. See
+  `eval/feedback/analysis/round-002.md` for the explicit convergence call.
+- **Pi benchmarks (the one genuine remaining follow-up):** numbers are container-measured and labelled
+  as such; re-measure on a real $5 Pi before quoting on a slide (correctness properties are
+  hardware-independent; the throughput ceiling is not). DEMO states the ceiling is RAM-bound
+  (~2.4MB/sub, ~100–150 on a 512MB Pi). Not a blocker for the proof or the demo.
+- **Line-budget:** `src/shellmux` is now 458 lines (374 pre-R1; +78 input validation, +6 R2 arg-rc).
+  Still honest in DEMO/spec ("~150" = the scheduler `src/sched.sh` at 167, the contribution; the
+  broker is plumbing). Trim is optional.
 
 ## Adversarial verification — DONE (PROMPT §3/§7.2): claim SURVIVES
 - 4 skeptic lenses (correctness, negative-control, prior-art-fidelity, measurement-validity) each
@@ -137,8 +175,11 @@ convergence — see round-001-delta.md); re-measure benchmarks on a real $5 Pi.
   at M5; crash-mid-`mv` at-most-once is M1's job to test; ms-vs-~1s resolution wording could be crisper.
 
 ## Next (ordered)
-All build milestones (M0–M5) are DONE — see "Done" above and "Open / optional" for the
-non-blocking follow-ups (product-phase evaluator loop, Pi benchmarks, optional line-trim).
+All build milestones (M0–M5) are DONE and all 5 DoD items are met (evaluator loop CONVERGED over
+two rounds this session). The ONLY remaining work is optional and non-blocking: re-measure
+benchmarks on a real $5 Pi (correctness is hardware-independent; only the throughput ceiling needs
+the box). A round-003 evaluator pass is NOT needed for correctness — run it only if iterating on
+ergonomics. See "Open / optional" above.
 
 ## Decisions & rationale (so nobody relitigates them)
 - **Wake reader uses `read -N 1`, NOT line mode.** A poke is a single newline-less byte; a
