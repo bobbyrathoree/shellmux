@@ -22,7 +22,7 @@ set -euo pipefail
 REPO="bobbyrathoree/shellmux"
 # Pinned by default so a piped one-liner can't silently change under you. Override
 # with SHELLMUX_VERSION=latest to track the newest release, or a specific tag.
-DEFAULT_VERSION="v0.1.0"
+DEFAULT_VERSION="v0.1.1"
 VERSION="${SHELLMUX_VERSION:-$DEFAULT_VERSION}"
 PREFIX="${PREFIX:-$HOME/.local}"
 

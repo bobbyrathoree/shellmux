@@ -27,7 +27,7 @@ set -uo pipefail
 
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 SCHED="$(dirname "$SELF")/sched.sh"
-SHELLMUX_VERSION="0.1.0"
+SHELLMUX_VERSION="0.1.1"
 
 die() { printf 'shellmux: %s\n' "$*" >&2; exit 1; }
 

@@ -8,11 +8,13 @@ Last updated: 2026-06-23 (R3 session)   |   Branch: master (clean) + private Git
   hero, platform reqs up front, builder docs moved to a Contributing section); `CONTRIBUTING.md` (the
   must-fail-negative-control rule + honesty ethos + scope + dev-container loop); `install.sh`
   (dep-check + libexec/wrapper install to ~/.local, `--prefix`/`--check`/`--uninstall`, smoke-tested);
-  top-level `--version`/`--help`/`-V`/`-h`/bare-invocation in `src/shellmux` (`SHELLMUX_VERSION=0.1.0`).
+  top-level `--version`/`--help`/`-V`/`-h`/bare-invocation in `src/shellmux` (`SHELLMUX_VERSION=0.1.1`).
 - Line counts now: `src/sched.sh` 186, `src/shellmux` 504 (+23 for the help/version block). Docs
   (README/DEMO/spec) reconciled. NO proof-axis change — `input_validation.sh` V5/V6 arg-rc contract
   intact; full suite re-run after.
-- Next: tag `v0.1.0` + `gh release create` (see "Next").
+- Released `v0.1.0`, then published a Homebrew tap (`bobbyrathoree/homebrew-tap`) + a `curl|bash`
+  installer (`get.sh`). Removed internal dev lab-notes and genericized the borrowed-project names for
+  the public repo; cut `v0.1.1` so the released tarball matches the cleaned tree.
 
 ## If you are a new agent, START HERE
 **The build is done and green, M0 through M5, the product-phase evaluator loop converged over two
