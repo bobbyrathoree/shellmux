@@ -1,8 +1,8 @@
 # shellmux — Design
 
 This is the "how it works" companion to `spec.md` (which holds the "what/why"). Where they appear
-to differ, `spec.md` wins. Source citations below were verified against the cloned trees under
-`<borrowed-sources>/{terminalphone,honker}`.
+to differ, `spec.md` wins. The borrowed mechanisms referenced below are catalogued in
+`docs/prior-art.md`; none of them are invented here.
 
 ## Vision
 
@@ -18,14 +18,14 @@ scheduler; the rest of the design exists to keep that component honest and small
 **Acceptor.** `socat TCP-LISTEN:$PORT,reuseaddr,fork EXEC:'bash handler.sh $DIR'`, plus a parallel
 `UNIX-LISTEN`. `fork` hands each connection a fresh process with the socket on stdin/stdout; the
 kernel provides per-client isolation and crash cleanup for free. The handler's `$$` is the
-subscriber's stable id. Shape borrowed from `terminalphone.sh:1206`/`:1350` (terminalphone uses a
+subscriber's stable id. Shape borrowed from a socat-fork terminal relay (the reference relay uses a
 `SYSTEM:` target; we use `EXEC:` + `,fork` — same fork-per-connection model).
 
 **Per-subscriber mailbox FIFO.** The handler runs `mkfifo $DIR/topics/$T/sub_$$.fifo`, registers
 `trap 'rm -f $INFIFO' EXIT`, starts a bounded ring drainer reading the FIFO, and holds it open with
 `exec 3>$INFIFO` so the reader never sees a spurious EOF when publishers come and go. Structure
-borrowed from `terminalphone.sh:1518-1546` (mkfifo, the `while IFS= read -r` drainer, the `exec 3>`
-keepalive). Note: terminalphone unlinks at *script end* (`:1590`); we harden this into an `EXIT`
+borrowed from the reference relay (mkfifo, the `while IFS= read -r` drainer, the `exec 3>`
+keepalive). Note: that relay unlinks at *script end*; we harden this into an `EXIT`
 trap so cleanup also fires on signal/crash. This is borrowed-in-spirit, not a literal trap line.
 
 **Bounded ring drainer (the backpressure unit).** The drainer is the *only* writer to the client
@@ -36,8 +36,8 @@ subscriber, so background writers cannot accumulate. (A fallback, `timeout 0.05 
 but pays O(subs×msgs) fork cost and can tear a frame — handled by length-prefix framing.)
 
 **Publisher fan-out.** Per record: `for f in topics/$T/sub_*.fifo; do [ "$f" = "$INFIFO" ] &&
-continue; [ -p "$f" ] || continue; <bounded-write>; done`. Shape borrowed from
-`terminalphone.sh:1567-1572`. Critically, terminalphone's actual write at `:1570` is
+continue; [ -p "$f" ] || continue; <bounded-write>; done`. Shape borrowed from the reference relay's
+fan-out loop. Critically, that relay's actual write is
 `printf '%s\n' "$line" > "$f" 2>/dev/null &` — a *blocking* write backgrounded with `&`. Under a
 flood to a wedged subscriber this spawns one stuck process per message: an unbounded fd/process
 leak, the *opposite* of isolation. We name that as the bug and replace it with the ring drainer; we
@@ -47,32 +47,32 @@ do not cite it as the backpressure mechanism.
 
 **Shared state under flock.** `( flock 9; … ) 9>$DIR/.lock` guards counters only. Topics are
 subdirs created with `mkdir -p` (atomic). Subscriber liveness *is* the existence of `sub_*.fifo`.
-flock pattern from `terminalphone.sh:1585-1590`.
+flock pattern from the reference relay's locked shared-counter idiom.
 
 **Cleanup.** Broker shutdown `kill`s socat and `pkill -P $socat_pid` reaps the forked handlers
-(`terminalphone.sh:1674-1676`); each handler's `EXIT` trap unlinks its FIFO; subscribers get EOF and
-reconnect — fail-loud, never a silent hang.
+(the reference relay's cleanup block); each handler's `EXIT` trap unlinks its FIFO; subscribers get
+EOF and reconnect — fail-loud, never a silent hang.
 
 ## The deadline scheduler — mechanism
 
 State lives entirely on disk as `topics/$T/deferred/<run_at>.<seq>` files. The scheduler loop:
 
-1. Compute `next = MIN(run_at)` by sorting filenames. This is the shell re-expression of honker's
-   `queue_next_claim_at` — `SELECT COALESCE(MIN(deadline),0)` over pending `run_at`
-   (`honker/honker-core/src/honker_ops.rs:536-558`).
+1. Compute `next = MIN(run_at)` by sorting filenames. This is the shell re-expression of a
+   durable-deadline job scheduler's "next claim" query — `SELECT COALESCE(MIN(deadline),0)` over
+   pending `run_at` in a SQLite-backed job queue.
 2. Block on `read -t $((min(idle_poll, next-now)))` against a long-lived wake-FIFO held open with
-   `exec 4>`. This mirrors honker's `recv_until` (`honker-rs/src/lib.rs:828` call, `:1558-1582`
-   impl), which does `recv_timeout(Duration::from_secs(unix_sec-now))` then drains. honker's use of
-   `from_secs` (`:1572`) — whole-second resolution — is why our ~1s floor on bash3/dash is faithful,
+   `exec 4>`. This mirrors the reference scheduler's block-until-deadline receive, which does
+   `recv_timeout(Duration::from_secs(unix_sec-now))` then drains. That reference's use of
+   `from_secs` — whole-second resolution — is why our ~1s floor on bash3/dash is faithful,
    not a degradation.
 3. On any wake (poke or timeout), **re-scan `deferred/` from scratch**, `mv` each now-due file into
    the fan-out path, recompute `next`, re-block.
 
 A delayed publish stages its file **first**, then pokes the wake-FIFO (a 1-byte write, < `PIPE_BUF`,
 atomic; concurrent pokes coalesce harmlessly). This stage-then-poke ordering is the direct analog of
-honker's recv-then-drain rule, whose comment states the failure of the reverse order outright:
-*"recv first, then drain — the opposite order would lose a wakeup when a publish lands between
-refill() and drain"* (`honker-rs/src/lib.rs:1105-1106`).
+the reference scheduler's recv-then-drain rule, whose source comment states the failure of the
+reverse order outright: *"recv first, then drain — the opposite order would lose a wakeup when a
+publish lands between refill() and drain."*
 
 The correctness argument has three layers, in priority order:
 
@@ -88,7 +88,8 @@ The correctness argument has three layers, in priority order:
 Fire-once is the property of a single commit point: the `mv` of the deferred file into fan-out.
 Before `mv`, the file is a pending deadline; after `mv`, it is consumed and gone. A crash *after*
 `mv` but *before* delivery re-delivers at most once on restart — documented as
-at-most-once-modulo-crash; we explicitly punt honker's full `claim_expires_at` lease machinery.
+at-most-once-modulo-crash; we explicitly punt the reference scheduler's full `claim_expires_at`
+lease machinery.
 
 ## Control / data flow
 
@@ -119,9 +120,10 @@ next scan never sees it. Broker death → `pkill -P` → all traps fire.
 
 ## How the borrowed techniques are adapted
 
-honker contributes the *discipline*, not code: durable-on-disk state, min-deadline scan,
-stage-then-poke ordering, and the leaf-prune vs central-death-guard distinction. We port the
-SQLite/Rust mechanics to FIFOs/`read -t` and filenames — no SQLite, no WAL, no Rust. terminalphone
-contributes the *relay shape* (socat-fork acceptor, per-client FIFO, drainer, keepalive `exec`,
-`[ -p ]` fan-out, flock'd stats, `pkill -P` cleanup) reused as cited — minus its one fatal pattern,
-the `> $f &` backgrounded blocking write, which we replace with the ring drainer.
+The SQLite-backed job queue contributes the *discipline*, not code: durable-on-disk state,
+min-deadline scan, stage-then-poke ordering, and the leaf-prune vs central-death-guard distinction.
+We port the SQLite/Rust mechanics to FIFOs/`read -t` and filenames — no SQLite, no WAL, no Rust. The
+socat-fork terminal relay contributes the *relay shape* (socat-fork acceptor, per-client FIFO,
+drainer, keepalive `exec`, `[ -p ]` fan-out, flock'd stats, `pkill -P` cleanup) reused as borrowed —
+minus its one fatal pattern, the `> $f &` backgrounded blocking write, which we replace with the
+ring drainer.

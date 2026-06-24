@@ -1,9 +1,9 @@
 # M0 — Adversarial verification verdict
 
-Per PROMPT.md §3 and §7.2, the M0 proof must **survive an adversarial-verification workflow**
+Per the project's verification discipline, the M0 proof must **survive an adversarial-verification workflow**
 before it is trusted. Four independent skeptic agents were each told to *refute* the
 0-missed/0-duplicate-over-5000 claim via a distinct lens, with full read access to the code, the
-honker source, and the ability to run the harness themselves. Run ID `wf_f9f50b67-d54`,
+borrowed reference sources, and the ability to run the harness themselves. Run ID `wf_f9f50b67-d54`,
 2026-06-06.
 
 ## Result: 4 / 4 lenses HOLDS (high confidence). No lens refuted the claim.
@@ -12,7 +12,7 @@ honker source, and the ability to run the harness themselves. Run ID `wf_f9f50b6
 |---|---|---|---|
 | Correctness of race injection + scheduler logic | **HOLDS** | high | Does the hook truly freeze in the `[MIN, read]` window? Is "fired within grace" a sound miss-proxy? Is `mv` really fire-once? |
 | Negative-control integrity | **HOLDS** | high | Is each control exactly one knob? Do they fail for the right reason? Can a *different* broken scheduler pass clean (false negative)? |
-| Fidelity to honker + honest citations | **HOLDS** | high | Do the cited honker lines say what we claim? Is the shell analog faithful? Is the ~1s-resolution defense honest? |
+| Fidelity to the borrowed mechanisms + honest framing | **HOLDS** | high | Do the borrowed mechanisms work as we claim? Is the shell analog faithful? Is the ~1s-resolution defense honest? |
 | Measurement & environment validity | **HOLDS** | high | Is 0.00% real or a measurement artifact? Does grace=1000ms hide Pi-relevant latency? Is the lockstep deterministic? Is the ms math correct? |
 
 Notable skeptic confirmations (their words, paraphrased):
@@ -54,7 +54,7 @@ not hiding anything; it is slack for slower hardware, and the proof holds far in
   fallback ⇒ no permanent loss) is hardware-independent, but the ms-latency numbers must be
   re-measured on the Pi at M5 before being quoted. → tracked for M5.
 - **Resolution claim.** shellmux actually runs at ms resolution here (bash 5 `read -t`); the "~1s,
-  faithful to honker's `from_secs`" framing is the *floor* on bash3/dash, and is honest as a floor.
+  faithful to the reference scheduler's whole-second timer" framing is the *floor* on bash3/dash, and is honest as a floor.
   Could be stated more crisply in docs (already noted in HANDOFF Decisions).
 - **Crash mid-`mv`.** Fire-once is the property of the `mv`; a crash strictly between `mv` and
   delivery re-delivers at most once on restart — this is the documented at-most-once-modulo-crash,

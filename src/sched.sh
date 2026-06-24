@@ -5,17 +5,17 @@
 # zero idle CPU and no timer wheel. State lives ENTIRELY on disk; nothing in
 # memory is authoritative.
 #
-# Ported discipline (honker), each line verified against the cloned tree:
-#   - next = MIN(run_at) over pending state.
-#       honker/honker-core/src/honker_ops.rs:536-558  (SELECT COALESCE(MIN(deadline),0))
-#   - block-until-deadline, then re-read.
-#       honker/packages/honker-rs/src/lib.rs:828 (recv_until call), :1558-1582 (impl)
-#   - whole-second resolution is faithful, not a downgrade.
-#       honker/packages/honker-rs/src/lib.rs:1572 (Duration::from_secs)
+# Ported discipline (from a durable-deadline job scheduler — a SQLite-backed job
+# queue whose claim loop we re-express over filenames; mechanisms borrowed, not
+# invented here):
+#   - next = MIN(run_at) over pending state.  (the queue's `SELECT MIN(deadline)`)
+#   - block-until-deadline, then re-read.      (its recv-until-deadline + drain)
+#   - whole-second resolution is faithful, not a downgrade.  (the reference uses
+#     a whole-second `Duration::from_secs`, so our ~1s floor matches it)
 #   - stage-then-poke ordering ("recv first, then drain — the opposite order
-#     would lose a wakeup").  honker/packages/honker-rs/src/lib.rs:1105-1106
+#     would lose a wakeup when a publish lands between refill and drain").
 #
-# The six-point discipline (CLAUDE.md / docs/design.md), realized below:
+# The six-point discipline (docs/design.md), realized below:
 #   1. State on disk as deferred/<run_at_ms>.<seq>. (publisher writes these)
 #   2. Each loop: next = MIN(run_at) over filenames, then a single blocking
 #      read with timeout = min(idle_poll, next-now) on a long-lived wake-FIFO.
@@ -53,8 +53,8 @@ else
 fi
 
 # --- wake FIFO held open read+write so a poke buffers even when not reading,
-#     and the reader never sees EOF when pokers come and go (honker's long-lived
-#     receiver; terminalphone's exec-held fd, terminalphone.sh:1546/1886-1887). ---
+#     and the reader never sees EOF when pokers come and go (a long-lived
+#     receiver holding the channel open, as in the borrowed relay's exec-held fd). ---
 exec 4<>"$DIR/wake.fifo"
 
 # --- optional chaos hook: a second pair of FIFOs lets the harness freeze the
@@ -92,7 +92,7 @@ is_numeric() {
 }
 
 # next = MIN(run_at_ms) over deferred/<run_at_ms>.<seq> filenames.
-# Echoes the min, or empty if no pending records. (honker queue_next_claim_at.)
+# Echoes the min, or empty if no pending records. (the queue's next-claim-at query.)
 scan_min() {
   local f b ra min=""
   for f in "$DIR"/deferred/*; do
@@ -145,7 +145,7 @@ mkdir -p "$DIR/outbox"
 # A crash *after* that mv but *before* delivery+rm leaves the record stranded in
 # outbox/. On startup we sweep outbox/ and re-deliver any survivor, then rm it.
 # This realizes at-most-once-modulo-crash: a record that crashed at the commit
-# boundary fires at most once more on restart (NOT honker's full claim_expires_at
+# boundary fires at most once more on restart (NOT the reference's full claim-lease
 # lease — explicitly punted). Deferred re-arm needs no special code: scan_min
 # reads deferred/ from disk every iteration, so surviving pending files re-arm by
 # construction. SCHED_NO_RECOVER=1 skips this sweep (test-only negative control).

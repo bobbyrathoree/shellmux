@@ -171,8 +171,7 @@ docker run --rm -v "$PWD:/work" -w /work shellmux-dev bash tests/chaos_deadline.
 ```
 
 Deep docs: [`docs/spec.md`](./docs/spec.md) (canonical design), [`docs/design.md`](./docs/design.md)
-(how it works), [`docs/prior-art.md`](./docs/prior-art.md) (what we borrow and how we differ, with
-cited sources), [`CLAUDE.md`](./CLAUDE.md) (the borrowed-mechanism source map), and
+(how it works), [`docs/prior-art.md`](./docs/prior-art.md) (what we borrow and how we differ), and
 [`HANDOFF.md`](./HANDOFF.md) (current build state).
 
 ## License

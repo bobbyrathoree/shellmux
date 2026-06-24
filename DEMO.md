@@ -73,7 +73,7 @@ socket); flood the topic over a single held-open connection. The two healthy
 subscribers get the whole flood at full speed *while the connection stays open*;
 the wedged subscriber's ring overflows and `cat drops_<wedged>` ticks up (that
 overload loss is **visible — counted, never silent**); and the publisher's process
-count stays **flat (~15)**. The must-fail control flips one knob to terminalphone's
+count stays **flat (~15)**. The must-fail control flips one knob to the borrowed relay's
 `printf > $f &` pattern and the count **balloons to ~1300** — the leak we replaced,
 made visible.
 
@@ -148,7 +148,7 @@ transfers directly.)
   process count, not "zero forks".
 - **Not POSIX-anywhere.** Needs bash≥4, `flock`, `timeout`, `socat`; sub-second
   timers need bash≥4 fractional `read -t` (whole-second floor on bash3/dash —
-  faithful to honker's own `Duration::from_secs`).
+  faithful to the reference scheduler's own whole-second timer).
 - **Not binary-clean transport.** A record is **one newline-delimited line of
   NUL-free text**: NUL bytes are stripped, and **each newline-terminated line is
   delivered as its own separate record** (a multi-line payload fans out as N records,

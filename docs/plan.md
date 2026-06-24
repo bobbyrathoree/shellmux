@@ -1,14 +1,13 @@
 # shellmux — Implementation Plan
 
-Source of truth is `spec.md`. This plan folds in `_partner-plan.md` (its milestone naming and "keep
-the pitch on deadlines" risk call are kept; its terser claims are superseded by the hardened spec).
+Source of truth is `spec.md`; this plan is subordinate to it (the hardened spec wins on any conflict).
 
 ## Stack & dependencies
 
 bash ≥ 4, `socat`, `flock` (util-linux), `timeout` + `mkfifo` + `dd` (coreutils), `lsof`/`ps` for
 tests. Develop and measure **in the Linux container** (`Dockerfile`), never on bare macOS bash 3.2.
-Reuse terminalphone's socat/FIFO/cleanup shape and honker's deadline discipline; write the scheduler
-and bounded subscriber path fresh.
+Reuse a socat-fork terminal relay's socat/FIFO/cleanup shape and a durable-deadline job scheduler's
+deadline discipline (borrowed, not invented); write the scheduler and bounded subscriber path fresh.
 
 ## Architecture units (build targets)
 
@@ -22,7 +21,7 @@ and bounded subscriber path fresh.
 
 **M0 — Deadline chaos proof (THE milestone; do this before any broker code).**
 *Deliverable:* `src/sched.sh` standalone + `tests/chaos_deadline.sh`. The scheduler obeys the
-six-point discipline in `CLAUDE.md`/`design.md` (disk state, MIN scan, `read -t` on wake-FIFO held
+six-point discipline in `design.md` (disk state, MIN scan, `read -t` on wake-FIFO held
 by `exec 4>`, stage-then-poke, full rescan on every wake, `mv` as the single commit point).
 *Verified by:* the harness instruments a test hook that pauses the loop between `next=MIN(...)` and
 `read -t`, fires a publish whose `run_at` is *now* into that pause, releases, and checks the fire.

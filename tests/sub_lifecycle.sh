@@ -9,8 +9,8 @@
 #      FIFO — `ls` shows it.
 #   S2 (forget-on-death). When the client disconnects (socket EOF / kill), the
 #      handler's EXIT trap unlinks its FIFO. The next `ls` never sees it. This is
-#      the shell analog of honker's Disconnected => false leaf prune
-#      (honker-core/src/lib.rs:957-960).
+#      the shell analog of the reference queue's opportunistic
+#      "disconnected => drop" leaf prune.
 #   S3 (concurrent subscribers are isolated). Two clients on the same topic get
 #      two distinct FIFOs (socat fork => one process each). Killing one leaves
 #      the other's FIFO intact.

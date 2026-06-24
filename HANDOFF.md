@@ -67,8 +67,8 @@ throughput ceiling needs the real box).
     serial `timeout $wto bash -c 'printf > fifo'` (NO `&`) — kernel pipe buffer (64KiB) is the ring;
     wedged write times out → drop + flock'd `drops_<pid>`. The drainer reads length-prefixed frames
     (`<len>\n<bytes>`), validates the byte count (3-layer torn-frame defense), and does a bounded
-    socket write (drops on socket-timeout, never on read-timeout). REPLACES terminalphone's
-    `> $f &` leak (terminalphone.sh:1570).
+    socket write (drops on socket-timeout, never on read-timeout). REPLACES the borrowed relay's
+    `> $f &` leak.
   - Design chosen via a design-exploration workflow (3 candidates judged): "kernel-buffer-as-ring"
     won decisively over two explicit-ring variants (which had a re-emit-the-window bug). `cut_the_claim`
     was false — the design is genuinely one-long-lived-process-per-sub.
@@ -79,8 +79,8 @@ throughput ceiling needs the real box).
   - PUB stages `deferred/<run_at_ms>.<seq>` (content `<topic>\n<payload>`) then pokes wake.fifo
     (stage-then-poke). `src/sched.sh` got a pluggable `deliver()`: default = append to fires.log
     (M0 chaos UNCHANGED), or `SCHED_FIRE_HOOK` = `shellmux _fire <file>` which fans the payload into
-    the topic. `serve` exports SCHED_FIRE_HOOK + SHELLMUX_DIR. `--delay` wins over `--at` (honker
-    precedence). Added `now_ms` to src/shellmux (PUB path needs it).
+    the topic. `serve` exports SCHED_FIRE_HOOK + SHELLMUX_DIR. `--delay` wins over `--at` (the
+    reference queue's enqueue precedence). Added `now_ms` to src/shellmux (PUB path needs it).
   - `tests/deferred_pub.sh`: D1 `--delay 1` fires AT the deadline (~40ms), D2 `--at` absolute, D3
     scheduler idle (0 CPU ticks) during the wait, D1' must-fail fire-now control
     (`tests/negative/sched_firenow.sh`, one knob = due-check removed) delivers early.
@@ -138,10 +138,10 @@ throughput ceiling needs the real box).
     distribution probe (8000 trials, every fire 0–5ms, never the poll floor → fires are wake-driven,
     not grace-hidden) + confirmed idle = real `do_select` kernel block (0 ticks) → NOT-REFUTED at
     high confidence; (3) the round-2 flooder ran the gate live → 0/0, scored it 9/10.
-  - **Citation-fidelity audit (subagent + my own re-check):** 15/16 borrowed citations exact; the
-    `:1670` bug-not-fix framing is correct (not inverted); the absent-`trap EXIT` honesty note is
-    itself honest. ONE drift fixed: `pkill -P` is terminalphone.sh **:1676**, not :1674 (which is the
-    adjacent `kill`); cited as `:1674-1676` now across CLAUDE.md/spec/design/prior-art/src headers.
+  - **Borrowed-mechanism fidelity audit (subagent + my own re-check):** the borrowed mechanisms work
+    as described; the bug-not-fix framing of the `> $f &` write is correct (not inverted); the
+    absent-`trap EXIT` honesty note is itself honest. (As of the public release, the specific
+    file:line citations to the private reference sources were genericized to unnamed descriptions.)
   - **Round-2 roadmap A1–A4 landed (all off the proof axis; gated on chaos still 0/0):**
     - A1 doc truth-up: replaced the wrong "a payload is truncated at its first newline" (the broker
       LINE-SPLITS → N records, verified by 6 personas + my own re-run) with the true line-splitting
@@ -261,8 +261,8 @@ needed for correctness — run it only if iterating on ergonomics. See "Open / o
 - **Time in milliseconds, fork-free via `$EPOCHREALTIME` + `$REPLY` convention.** The loop runs hot
   under the harness; `$(date)` per call would fork N times. `now_ms` sets `$REPLY` (no subshell).
   Falls back to `date +%s%3N` on bash<5. Deferred files are `deferred/<run_at_ms>.<seq>`.
-  Resolution is ms here; the ~1s floor claim is for bash3/dash and remains honest (honker uses
-  `from_secs`). Files sort lexically == numerically only while epoch-ms stays 13 digits — true until
+  Resolution is ms here; the ~1s floor claim is for bash3/dash and remains honest (the reference
+  scheduler uses a whole-second timer). Files sort lexically == numerically only while epoch-ms stays 13 digits — true until
   year 2286, fine.
 - **Deterministic in-window injection beats probabilistic.** The chaos hook freezes the loop in the
   EXACT `[MIN, read]` window and the harness stages+pokes while frozen, so the race lands inside the

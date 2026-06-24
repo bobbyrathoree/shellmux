@@ -2,51 +2,51 @@
 
 This is the document that keeps the project honest in front of a hostile reviewer. Every prior-art
 claim names a concrete project, paper, or OS feature, states precisely how shellmux differs, and the
-final section lists the "this is just X" dismissals that must be pre-empted. The red-team verdict
-(`docs/_redteam-verdict.md`) is folded in.
+final section lists the "this is just X" dismissals that must be pre-empted.
 
 ## Concrete prior art
 
-### honker (the algorithm we port — cited, verified)
+### The deadline-scheduler discipline (borrowed, not invented)
 
-honker is a SQLite-backed job queue. Its scheduler is exactly the discipline we re-express in shell.
+The scheduler we re-express in shell is the discipline of a durable-deadline job scheduler — a
+SQLite-backed job queue. We did not invent it; we ported it.
 
-- **Next-deadline query.** `queue_next_claim_at` (`honker/honker-core/src/honker_ops.rs:536-558`)
-  does `SELECT COALESCE(MIN(deadline),0)` over pending `run_at` and processing `claim_expires_at`.
-  We re-express the `MIN` over `deferred/<run_at>.<seq>` filenames — no SQLite, no WAL, no Rust.
-- **Block-until-deadline.** `recv_until` (`honker-rs/src/lib.rs:828` call; `:1558-1582` impl) does
-  `recv_timeout(Duration::from_secs(unix_sec - now))` then drains. We use `read -t $((min(idle,
-  next-now)))` on a wake-FIFO. **honker uses `from_secs` (`:1572`) — whole-second resolution — so
-  our ~1s floor is faithful, not a degradation.**
-- **Ordering rule.** The comment at `honker-rs/src/lib.rs:1105-1106` — *"recv first, then drain —
-  the opposite order would lose a wakeup when a publish lands between refill() and drain"* — is the
-  rule we adopt as "stage the file, **then** poke the wake-FIFO."
-- **Prune vs death-guard (we fix the draft's swap).** honker's opportunistic leaf prune
-  `list.retain(... Disconnected => false)` (`honker-core/src/lib.rs:957-960`) maps to our subscriber
-  `EXIT`-trap unlink + `[ -p ]` skip. honker's `WatcherDeathGuard::drop` (`:908-916`) clears *all*
-  senders when the **central** watcher dies — that maps to our **broker** shutdown (`pkill -P`), not
-  a single subscriber dying. We state the mapping correctly.
+- **Next-deadline query.** The reference job queue's next-deadline query does a
+  `SELECT MIN(deadline)` over pending `run_at` and processing `claim_expires_at`. We re-express that
+  `MIN` over `deferred/<run_at>.<seq>` filenames — no SQLite, no WAL, no Rust.
+- **Block-until-deadline.** Its receive path blocks until the next deadline with a
+  `recv_timeout(Duration::from_secs(unix_sec - now))`, then drains. We use `read -t $((min(idle,
+  next-now)))` on a wake-FIFO. **The reference uses whole-second `from_secs` resolution — so our ~1s
+  floor is faithful, not a degradation.**
+- **Ordering rule.** A comment in that reference states the rule outright — *"recv first, then drain
+  — the opposite order would lose a wakeup when a publish lands between refill() and drain"* — which
+  we adopt as "stage the file, **then** poke the wake-FIFO."
+- **Prune vs death-guard (we fix the draft's swap).** The reference's opportunistic leaf prune (a
+  `retain(... Disconnected => false)` over the subscriber list) maps to our subscriber `EXIT`-trap
+  unlink + `[ -p ]` skip. Its death-guard — which clears *all* senders when the **central** watcher
+  dies — maps to our **broker** shutdown (`pkill -P`), not a single subscriber dying. We state the
+  mapping correctly.
 
 *How we differ:* we drop persistence, WAL, leases (`claim_expires_at`), and the SQLite engine
 entirely; we keep only the deadline-firing discipline, ported to a substrate with no threads, no
 atomics, and only advisory locks. That port — proving the discipline survives in shell — is the work.
 
-### terminalphone (the relay shape — cited, verified)
+### The socat-fork relay shape (borrowed)
 
-A terminal-sharing relay built on socat-fork + FIFOs.
+The relay shape comes from a socat-fork terminal relay — a terminal-sharing tool built on
+socat-fork + FIFOs.
 
-- Reused as cited: socat-fork acceptor (`terminalphone.sh:1206`/`:1350`), per-client FIFO
-  (`:1518-1520`), drainer (`:1540-1544`), keepalive `exec 3>` (`:1546`), `[ -p ]`-guarded fan-out
-  (`:1567-1572`), flock'd stats (`:1585-1590`), `kill`+`pkill -P` cleanup (`:1674-1676`), persistent fd binding
-  (`:1886-1887`).
-- **What is NOT there / what we replace:** non-blocking writes. Line `:1570` is
+- Reused from the reference relay: the socat-fork acceptor, per-client FIFO, drainer, keepalive
+  `exec 3>`, `[ -p ]`-guarded fan-out, flock'd stats, `kill`+`pkill -P` cleanup, and persistent fd
+  binding.
+- **What is NOT there / what we replace:** non-blocking writes. The relay's fan-out line is
   `printf '%s\n' "$line" > "$f" 2>/dev/null &` — a *blocking* write backgrounded with `&`. Under a
   flood to a wedged subscriber it leaks one stuck process per message. We name it as the bug and
   replace it with a bounded ring drainer; we never cite it as the backpressure fix.
 
-*How we differ:* terminalphone has no topics, no timed delivery, and the leaky write path.
+*How we differ:* the reference relay has no topics, no timed delivery, and the leaky write path.
 shellmux adds topic subdirs, the deadline scheduler, and a corrected single-drainer backpressure
-unit. terminalphone unlinks at handler end (`:1590`); we harden that into an `EXIT` trap.
+unit. The relay unlinks at handler end; we harden that into an `EXIT` trap.
 
 ### Mosquitto / NATS / Redis Pub-Sub / ZeroMQ
 
@@ -102,9 +102,9 @@ patches: (1) put the deadline chaos test first in the README and demo; (2) repla
 with "blocks between computed deadlines; worst-case latency is `idle_poll`"; (3) ship a platform
 matrix (bash 4 fractional vs whole-second timers); (4) make length-prefixed framing mandatory if the
 timeout-write fallback ships; (5) if the bounded ring drainer is not actually one long-lived process
-per subscriber, cut the backpressure claim. The verdict's own source checks
-(`honker_ops.rs:536-558`, `honker-core/src/lib.rs:908-960`, `terminalphone.sh:1204-1207`/`:1520`/
-`:1676`/`:1886-1887`) were re-verified against the cloned trees.
+per subscriber, cut the backpressure claim. The verdict's own source checks — the next-deadline
+query, the prune-and-death-guard pair from the job scheduler, and the acceptor / FIFO / cleanup /
+fd-binding shapes from the relay — were re-verified against the reference implementations.
 
 ## The single sharpest dismissal we must survive
 

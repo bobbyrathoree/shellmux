@@ -31,7 +31,7 @@ shellmux is aimed at a skeptical audience. We state true, platform-qualified num
 limits out loud (lossy backpressure, no persistence, fork-bound throughput, the real dependency set).
 Don't add a claim the code can't back, and don't soften a limit that's real. If a doc sentence and the
 code disagree, the **code wins** and the doc gets fixed. Borrowed mechanisms must cite a real
-`file:line` that actually says what you claim (`docs/prior-art.md`, `CLAUDE.md`).
+the mechanism honestly as borrowed, not invented (see `docs/prior-art.md`).
 
 ## What's in scope / out of scope
 

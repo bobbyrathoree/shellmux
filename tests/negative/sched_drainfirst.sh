@@ -6,17 +6,16 @@
 # Byte-for-byte copy of src/sched.sh with EXACTLY ONE discipline point violated.
 # `diff src/sched.sh tests/negative/sched_drainfirst.sh` shows the single knob.
 #
-# VIOLATION: the literal inverse of honker's ordering rule
-#   honker/packages/honker-rs/src/lib.rs:1105-1106:
+# VIOLATION: the literal inverse of the borrowed ordering rule —
 #     "recv first, then drain — the opposite order would lose a wakeup when a
-#      publish lands between refill() and drain."
+#      publish lands between refill and drain."
 # This variant DRAINS the wake-FIFO (consumes all buffered poke bytes with a
 # non-blocking read loop) and THEN blocks on a fresh read. A poke that the
 # publisher sent while the scheduler was computing/frozen is consumed by the
 # drain WITHOUT being matched to a post-drain rescan-block, so the subsequent
 # blocking read has nothing buffered and sleeps the stale idle_poll. The
-# deadline is missed until the poll floor — exactly the lost-wakeup honker warns
-# about.
+# deadline is missed until the poll floor — exactly the lost wakeup the rule
+# warns about.
 #
 # EXPECTED under the chaos harness: missed > 0.
 set -uo pipefail

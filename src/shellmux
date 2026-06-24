@@ -6,13 +6,14 @@
 # out of fork-per-connection for free. The one hard contribution is the
 # data-derived deadline scheduler (src/sched.sh, proven by tests/chaos_deadline.sh).
 #
-# Borrowed relay shape (verified against the cloned tree):
-#   socat-fork acceptor      terminalphone.sh:1206/1350  (we use EXEC: + ,fork)
-#   per-client FIFO + drainer terminalphone.sh:1518-1546
-#   [ -p ]-guarded fan-out    terminalphone.sh:1567-1572
-#   pkill -P cleanup          terminalphone.sh:1674-1676
-# We REPLACE terminalphone's `printf ... > $f &` blocking-write-backgrounded
-# leak (terminalphone.sh:1570) — see M3 bounded ring drainer.
+# Borrowed relay shape (from a socat-fork terminal relay; mechanisms reused, not
+# invented here):
+#   socat-fork acceptor       (we use EXEC: + ,fork)
+#   per-client FIFO + drainer
+#   [ -p ]-guarded fan-out
+#   pkill -P cleanup
+# We REPLACE that relay's `printf ... > $f &` blocking-write-backgrounded leak
+# (a stuck process per message to a wedged peer) — see the bounded ring drainer.
 #
 # Usage:
 #   shellmux serve <dir> [--unix <path>] [--tcp <port>]   start the broker
@@ -114,8 +115,8 @@ valid_deadline() {
 #   killed depositing zero bytes, and we drop + bump a visible drops_<pid>.
 #   Crucially there is NO `&` — exactly ONE serial, timeout-bounded write per
 #   subscriber per record — so the publisher never accumulates processes. This
-#   replaces terminalphone's `printf ... > $f &` leak (terminalphone.sh:1570),
-#   which spawns one stuck process per message to a wedged peer.
+#   replaces the borrowed relay's `printf ... > $f &` leak, which spawns one
+#   stuck process per message to a wedged peer.
 #   Records are length-prefixed on the wire to the FIFO (`<decimal-len>\n<bytes>`)
 #   so a torn write is caught by the drainer's short-read and discarded.
 #   Honest: this is NOT fork-free (each write is a ~675us `timeout bash -c`); the
@@ -168,7 +169,7 @@ fanout() {
       if ! timeout "$wto" bash -c "$writer" _ "$f" "$frame" "$td/.wlock_$pid" 2>/dev/null; then
         # serialize the read-modify-write so concurrent publishers to the same
         # wedged sub don't lose increments (flock'd-counter shape,
-        # terminalphone.sh:1585-1590). `local` is invalid in a ( ) subshell, so v
+        # the borrowed flock'd-counter shape). `local` is invalid in a ( ) subshell, so v
         # is a plain assignment scoped to the subshell.
         ( flock 9
           v=$(cat "$td/drops_$pid" 2>/dev/null)
@@ -206,8 +207,8 @@ _handle() {
       INFIFO="$td/sub_$$.fifo"
       mkfifo "$INFIFO" 2>/dev/null || exit 1
       # forget-on-death: unlink the mailbox when this handler dies (disconnect,
-      # signal, crash). The shell analog of honker's Disconnected => false prune
-      # (honker-core/src/lib.rs:957-960). SHELLMUX_NO_TRAP=1 skips it (test control).
+      # signal, crash). The shell analog of the reference queue's opportunistic
+      # "disconnected => drop" leaf prune. SHELLMUX_NO_TRAP=1 skips it (test control).
       [ "${SHELLMUX_NO_TRAP:-0}" = "1" ] || trap 'rm -f "$INFIFO"' EXIT
       local pid="$$" wto="${SHELLMUX_WRITE_TIMEOUT:-0.05}"
       # drainer: the ONLY writer to the socket (stdout) and the OWNER of
@@ -239,7 +240,7 @@ _handle() {
           fi
         done < "$INFIFO" ) &
       # keepalive: hold the FIFO open for writing so the drainer never sees EOF
-      # as publishers come and go (terminalphone.sh:1546).
+      # as publishers come and go (the borrowed relay's keepalive fd).
       exec 3>"$INFIFO"
       # block until the client disconnects (socket EOF on stdin); then fall off
       # the end and the EXIT trap fires.
@@ -268,7 +269,7 @@ _handle() {
       [ -z "$at" ]    || valid_deadline at    "$at"    || { printf 'shellmux: bad --at\n'    >&2; exit 1; }
       local td="$dir/topics/$topic"; mkdir -p "$td"
       # Compute the run-at deadline in ms epoch. --delay wins over --at (matches
-      # honker enqueue precedence, honker_ops.rs:567-571). No deadline => immediate.
+      # the reference queue's enqueue precedence). No deadline => immediate.
       local run_at_ms=""
       if [ -n "$delay" ]; then now_ms; run_at_ms=$(( REPLY + delay * 1000 ))
       elif [ -n "$at" ]; then run_at_ms=$(( at * 1000 )); fi
@@ -276,7 +277,7 @@ _handle() {
       while IFS= read -r rec; do
         if [ -n "$run_at_ms" ]; then
           # DEFERRED publish: stage the record FIRST, THEN poke the wake-FIFO
-          # (stage-then-poke; the reverse loses the wake — honker lib.rs:1105-1106).
+          # (stage-then-poke; the reverse loses the wake — the borrowed ordering rule).
           # The file encodes its topic so the scheduler's fire hook can fan it out.
           # A global deferred/ keeps one scheduler scanning a single MIN over all
           # topics (the M0 discipline, unchanged).
@@ -398,8 +399,8 @@ serve() {
   fi
 
   # Broker shutdown = fail-loud-for-all: reap the scheduler and every forked
-  # handler so subscribers get EOF and reconnect (honker WatcherDeathGuard::drop,
-  # honker-core/src/lib.rs:908-916; pkill -P shape terminalphone.sh:1674-1676).
+  # handler so subscribers get EOF and reconnect (the reference queue's death-guard
+  # that clears all senders when the central watcher dies; pkill -P from the relay).
   shutdown() { local p; for p in "${pids[@]}"; do pkill -P "$p" 2>/dev/null; kill "$p" 2>/dev/null; done; exit 0; }
   trap shutdown TERM INT
   wait

@@ -33,7 +33,7 @@
 # MUST-FAIL NEGATIVE CONTROLS (a green test that can't fail a wrong impl proves
 # nothing). Each control is src/sched.sh with EXACTLY ONE discipline violated:
 #   naivesleep — blind `sleep` instead of blocking on the wake-FIFO  => missed>0
-#   drainfirst — drains the wake before blocking (honker's lost wakeup) => missed>0
+#   drainfirst — drains the wake before blocking (the reference queue's lost wakeup) => missed>0
 #   nocommit   — fires in place, no mv commit point                  => dup>0
 # The harness asserts each control DOES fail on its axis. If a control passes
 # clean, the harness is not exercising the race — the whole proof is void.
@@ -224,7 +224,7 @@ fi
 
 echo
 echo "${C_YEL}[3/5] NEGATIVE CONTROL: drainfirst (must MISS) — N=$N_NEG${C_RST}"
-echo "      drains the wake before blocking (honker's lost-wakeup ordering)."
+echo "      drains the wake before blocking (the reference queue's lost-wakeup ordering)."
 run_chaos "$SCHED_DRAIN" "$N_NEG" "$IDLE_NEG_MS" "$GRACE_NEG_MS"
 echo "      -> missed=$R_MISSED dup=$R_DUP ontime=$R_ONTIME"
 if [ "$R_MISSED" -gt 0 ]; then

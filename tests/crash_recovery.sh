@@ -18,7 +18,7 @@
 #   R3 (at-most-once bound). Recovery re-delivers; combined with fire-once in the
 #      steady state, each record fires AT MOST once per crash it survives. For a
 #      single crash that means dup <= 1 per record — the documented
-#      at-most-once-modulo-crash, NOT honker's full claim_expires_at lease.
+#      at-most-once-modulo-crash, NOT the reference queue's full claim-lease.
 #
 # MUST-FAIL NEGATIVE CONTROL (R2'): a scheduler WITHOUT outbox recovery must
 # LOSE a stranded outbox file (it never re-fires). If the no-recover variant

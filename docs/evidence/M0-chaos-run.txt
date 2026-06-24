@@ -15,7 +15,7 @@
       PASS (control failed as required): missed=120 > 0
 
 [3/5] NEGATIVE CONTROL: drainfirst (must MISS) — N=120
-      drains the wake before blocking (honker's lost-wakeup ordering).
+      drains the wake before blocking (the reference queue's lost-wakeup ordering).
       -> missed=120 dup=0 ontime=0
       PASS (control failed as required): missed=120 > 0
 

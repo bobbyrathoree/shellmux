@@ -46,7 +46,7 @@ check_deps() {
   local missing=0
   say "Checking dependencies (Linux + real dep set):"
   # bash >= 4 for fractional `read -t` (sub-second timers). bash 3 still runs but
-  # at ~1s resolution — faithful to honker's whole-second floor, just coarser.
+  # at ~1s resolution — faithful to the reference's whole-second floor, just coarser.
   local bv="${BASH_VERSINFO[0]:-0}"
   if [ "$bv" -ge 4 ]; then ok "bash $BASH_VERSION (>= 4: sub-second timers)"
   else warn "bash $BASH_VERSION (< 4: timers fall back to ~1s resolution — still correct, just coarser)"; fi

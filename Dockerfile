@@ -11,7 +11,7 @@
 #   Provides:
 #     - bash >= 4  (Debian bookworm ships bash 5.2) -> fractional `read -t`,
 #       enabling sub-100ms wake latency. The ~1s floor on bash3/dash remains
-#       faithful (honker's reference uses Duration::from_secs).
+#       faithful (the reference scheduler uses a whole-second timer).
 #     - coreutils  -> mkfifo, timeout, dd  (the bounded-write fallback path)
 #     - util-linux -> flock                (the shared-counter lock)
 #     - socat                              (fork-per-connection acceptor, TCP + UNIX)
