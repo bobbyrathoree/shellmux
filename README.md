@@ -95,16 +95,36 @@ sudo apk add            bash socat util-linux coreutils   # Alpine
 
 ## Install
 
+**Homebrew** (Linux / Linuxbrew, also works on macOS — brews bash≥4, `flock`, GNU `timeout`):
+
+```bash
+brew tap bobbyrathoree/tap
+brew install shellmux
+shellmux --help
+```
+
+**curl | bash** (installs to `~/.local`, no root). Trusts the script — or inspect it first:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bobbyrathoree/shellmux/master/get.sh | bash
+# inspect-first:
+#   curl -fsSL https://raw.githubusercontent.com/bobbyrathoree/shellmux/master/get.sh -o get-shellmux.sh
+#   less get-shellmux.sh && bash get-shellmux.sh
+```
+
+**From source** (clone + the bundled installer):
+
 ```bash
 git clone https://github.com/bobbyrathoree/shellmux.git
 cd shellmux
-./install.sh                 # installs to ~/.local (bin/ + libexec/); checks deps + smoke-tests
-# or system-wide:  sudo ./install.sh --prefix /usr/local
-# verify deps only: ./install.sh --check
-# remove:           ./install.sh --uninstall
+./install.sh                 # ~/.local (bin/ + libexec/); checks deps + smoke-tests
+# system-wide:  sudo ./install.sh --prefix /usr/local
+# deps only:    ./install.sh --check     ·    remove:  ./install.sh --uninstall
 ```
 
-Then make sure `~/.local/bin` is on your `PATH` and run `shellmux --help`. No build step — it's shell.
+After a `~/.local` install, make sure `~/.local/bin` is on your `PATH`, then run `shellmux --help`.
+No build step — it's shell. (Reminder: shellmux is Linux-first; on macOS the broker runs but its
+FIFO/flock timing is only fully guaranteed on Linux — for serious use, run it there.)
 
 ## Usage
 
