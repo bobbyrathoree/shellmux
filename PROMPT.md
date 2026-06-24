@@ -226,7 +226,7 @@ commit, and produce a 1-page `DEMO.md` (what to run, what the judge will see, wh
 ## 7b. Recommended skills (Matt Pocock's "Skills For Real Engineers")
 
 A curated skill set is installed (plugin `mattpocock-skills`; source at
-`/Users/bobbyrathore/Documents/WildProjects/skills`). Use them — they are battle-tested for
+`<local-skills-plugin>`). Use them — they are battle-tested for
 real engineering, not vibe-coding. Map to your phases:
 
 - **`grill-with-docs`** — BEFORE M0 and before each milestone: grill yourself against

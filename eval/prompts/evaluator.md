@@ -16,7 +16,7 @@ N ≥ 5000 trials. Fan-out and forget-on-death are free from fork and are *not* 
 
 - **`spec` phase (no app yet):** You evaluate the documents only — `docs/spec.md`, `design.md`,
   `plan.md`, `prior-art.md`. You MAY open the cited source under
-  `/Users/bobbyrathore/Documents/WildProjects/cool-oss-projects/{terminalphone,honker}` to verify a
+  `<borrowed-sources>/{terminalphone,honker}` to verify a
   citation. You attack claims, check citations, hunt overstatement and un-pre-empted dismissals.
 - **`product` phase (M0 built):** You USE the running broker in an isolated working dir / instance.
   Commands like: start `src/shellmux`, `SUB`/`PUB` over the socket, `pub --delay`, wedge a

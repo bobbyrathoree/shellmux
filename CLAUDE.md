@@ -150,7 +150,7 @@ are **not run yet** — this is scaffolding. To run a round, read `eval/README.m
 
 ## Recommended skills (Matt Pocock's "Skills For Real Engineers")
 
-Installed as plugin `mattpocock-skills` (source: `/Users/bobbyrathore/Documents/WildProjects/skills`).
+Installed as plugin `mattpocock-skills` (source: `<local-skills-plugin>`).
 Use them — see `PROMPT.md` §7b for the phase mapping. Quick reference:
 
 - `grill-with-docs` — grill yourself against the spec/design before M0 and each milestone.

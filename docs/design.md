@@ -2,7 +2,7 @@
 
 This is the "how it works" companion to `spec.md` (which holds the "what/why"). Where they appear
 to differ, `spec.md` wins. Source citations below were verified against the cloned trees under
-`/Users/bobbyrathore/Documents/WildProjects/cool-oss-projects/{terminalphone,honker}`.
+`<borrowed-sources>/{terminalphone,honker}`.
 
 ## Vision
 
