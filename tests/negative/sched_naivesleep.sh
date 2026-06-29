@@ -3,34 +3,72 @@
 # ============================================================================
 # DELIBERATELY BROKEN NEGATIVE CONTROL — DO NOT USE IN PRODUCTION.
 # ============================================================================
-# This is a byte-for-byte copy of src/sched.sh with EXACTLY ONE discipline
-# point violated, so `diff src/sched.sh tests/negative/sched_naivesleep.sh`
-# shows the single knob.
+# Byte-for-byte copy of src/sched.sh with EXACTLY ONE discipline point
+# violated. `diff src/sched.sh tests/negative/sched_naivesleep.sh` shows the single knob
+# (this banner) plus the one change marked `THE ONE BROKEN ...` below.
 #
-# VIOLATION: discipline point #2/#4 — instead of BLOCKING ON THE WAKE-FIFO with
-# `read -N 1 -t`, this variant does a blind `sleep "$to_s"`. It is the canonical
-# "just sleep $((next-now))" dismissal made real. Because `next` was computed
-# BEFORE the publish landed in the race window, `to_s` is the stale idle_poll;
-# the scheduler sleeps the full idle_poll, ignoring the poke entirely, and only
-# fires on the next rescan — idle_poll LATE. The chaos harness counts that as a
-# MISS (deadline whooshed by; fired only on the poll floor).
+# VIOLATION: discipline #2/#4 — blind `sleep` instead of blocking on the wake-FIFO.
+# EXPECTED under the chaos harness: missed > 0. If this control passes clean,
+# the harness is not exercising the race and the whole proof is void.
 #
-# EXPECTED under the chaos harness: missed > 0.  If this passes clean, the
-# harness is not exercising the race and the whole proof is void.
+# Fires timed (deferred) records race-free against concurrent publishes, with
+# zero idle CPU and no timer wheel. State lives ENTIRELY on disk; nothing in
+# memory is authoritative.
+#
+# Ported discipline (from a durable-deadline job scheduler — a SQLite-backed job
+# queue whose claim loop we re-express over filenames; mechanisms borrowed, not
+# invented here):
+#   - next = MIN(run_at) over pending state.  (the queue's `SELECT MIN(deadline)`)
+#   - block-until-deadline, then re-read.      (its recv-until-deadline + drain)
+#   - whole-second resolution is faithful, not a downgrade.  (the reference uses
+#     a whole-second `Duration::from_secs`, so our ~1s floor matches it)
+#   - stage-then-poke ordering ("recv first, then drain — the opposite order
+#     would lose a wakeup when a publish lands between refill and drain").
+#
+# The six-point discipline (docs/design.md), realized below:
+#   1. State on disk as deferred/<run_at_ms>.<seq>. (publisher writes these)
+#   2. Each loop: next = MIN(run_at) over filenames, then a single blocking
+#      read with timeout = min(idle_poll, next-now) on a long-lived wake-FIFO.
+#   3. Publishers stage the file FIRST, then poke the wake-FIFO (publisher side).
+#   4. Every wake (poke OR timeout) triggers a FULL deferred/ re-scan.
+#   5. The idle_poll timeout is the correctness floor: even if every wake is
+#      lost, the next poll rescans and fires. The wake only improves latency.
+#   6. The single commit point per due record is the `mv` out of deferred/.
+#      Fire-once is the property of that mv.
+#
+# Usage:  bash src/sched.sh <state_dir>
+#   <state_dir> must contain: deferred/ (dir), wake.fifo (fifo). The scheduler
+#   creates outbox/ and appends fired records to fires.log as "<payload> <ms>".
+#
+# Env:
+#   SCHED_IDLE_POLL_MS   poll-fallback ceiling in ms (default 1000).
+#   SCHED_HOOK           if "1" AND hook_paused.fifo/hook_release.fifo exist in
+#                        <state_dir>, the loop pauses between next=MIN and the
+#                        blocking read, for the chaos harness to inject a race.
 set -uo pipefail
 
 DIR="${1:?usage: sched.sh <state_dir>}"
 IDLE_POLL_MS="${SCHED_IDLE_POLL_MS:-1000}"
 HOOK="${SCHED_HOOK:-0}"
 
+# now_ms -> sets $REPLY to current unix time in ms. The REPLY convention (vs
+# echo + command substitution) avoids a subshell fork on every call, which
+# matters because the loop runs hot under the chaos harness. Prefer bash>=5
+# $EPOCHREALTIME (a pure builtin, no fork); fall back to `date +%s%3N` on
+# bash 4 (one fork/call — still fine, the loop blocks most of the time).
 if [ -n "${EPOCHREALTIME:-}" ]; then
   now_ms() { local e=$EPOCHREALTIME; REPLY=$(( ${e%.*} * 1000 + 10#${e#*.} / 1000 )); }
 else
   now_ms() { REPLY=$(date +%s%3N); }
 fi
 
+# --- wake FIFO held open read+write so a poke buffers even when not reading,
+#     and the reader never sees EOF when pokers come and go (a long-lived
+#     receiver holding the channel open, as in the borrowed relay's exec-held fd). ---
 exec 4<>"$DIR/wake.fifo"
 
+# --- optional chaos hook: a second pair of FIFOs lets the harness freeze the
+#     loop in the exact window between "next computed" and "read entered". ---
 hook_on=0
 if [ "$HOOK" = "1" ] && [ -p "$DIR/hook_paused.fifo" ] && [ -p "$DIR/hook_release.fifo" ]; then
   exec 7<>"$DIR/hook_paused.fifo"
@@ -39,29 +77,71 @@ if [ "$HOOK" = "1" ] && [ -p "$DIR/hook_paused.fifo" ] && [ -p "$DIR/hook_releas
 fi
 
 running=1
-trap 'exit 0' TERM INT   # exit (not running=0): bash retries reads after a non-exiting trap
+# NOTE: a bare `trap 'running=0'` does NOT work here — bash retries an
+# interrupted `read` after a non-exiting trap, so a signal that lands while the
+# loop is blocked in `read -N 1` would never break out. `exit 0` terminates
+# immediately regardless of where we are blocked. The `running` flag still
+# provides a graceful stop when a wake-FIFO read returns EOF.
+trap 'exit 0' TERM INT
 
+# A deferred filename's run_at prefix must be a non-negative integer (the broker
+# stages numeric epoch-ms; valid_deadline rejects non-numeric --at/--delay before
+# staging). But state is the filesystem, so a corrupt prefix can still appear: a
+# publisher crashed mid-write, or a raw producer wrote into the state dir. A
+# non-numeric prefix poisons the `next` arithmetic ($(( next - now ))) and, under
+# `set -u`, killed the whole scheduler — one bad file blocking every pending
+# record (a global-liveness DoS). is_numeric() lets scan_min/fire_due SKIP such a
+# record instead of dying: a corrupt file costs one scan-skip, never a halt — the
+# same robustness posture as "a spurious/dropped wake costs one scan, never a
+# missed message." SCHED_NO_SKIP_CORRUPT=1 disables the guard (the one-knob
+# must-fail control, tests/corrupt_deferred.sh C1'): the crash returns, proving
+# the guard is load-bearing.
+is_numeric() {
+  [ "${SCHED_NO_SKIP_CORRUPT:-0}" = "1" ] && return 0
+  case "$1" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac
+}
+
+# next = MIN(run_at_ms) over deferred/<run_at_ms>.<seq> filenames.
+# Echoes the min, or empty if no pending records. (the queue's next-claim-at query.)
 scan_min() {
   local f b ra min=""
   for f in "$DIR"/deferred/*; do
-    [ -e "$f" ] || continue
+    [ -e "$f" ] || continue            # glob-no-match guard
     b=${f##*/}; ra=${b%%.*}
+    is_numeric "$ra" || continue       # skip a corrupt (non-numeric) prefix
     if [ -z "$min" ] || [ "$ra" -lt "$min" ]; then min=$ra; fi
   done
   printf '%s' "$min"
 }
 
+# deliver <outbox_file>: the pluggable delivery step. By default (standalone /
+# M0 chaos) it appends "<payload> <fire_ms>" to fires.log — so the chaos test is
+# byte-identical to before. The broker sets SCHED_FIRE_HOOK to a command that is
+# invoked as `$SCHED_FIRE_HOOK <outbox_file>` to fan the record into a topic.
+# Either way the record has ALREADY left deferred/ via the mv commit point, so
+# fire-once holds regardless of what delivery does.
+deliver() {
+  local dest=$1 now=$2
+  if [ -n "${SCHED_FIRE_HOOK:-}" ]; then
+    $SCHED_FIRE_HOOK "$dest"
+  else
+    printf '%s %s\n' "$(cat "$dest" 2>/dev/null)" "$now" >> "$DIR/fires.log"
+  fi
+}
+
+# Fire every due record: mv out of deferred/ (THE commit point), then deliver.
+# A record that has left deferred/ cannot be seen by a later scan -> fire-once.
 fire_due() {
-  local now f b ra dest payload
+  local now f b ra dest
   now_ms; now=$REPLY
   for f in "$DIR"/deferred/*; do
     [ -e "$f" ] || continue
     b=${f##*/}; ra=${b%%.*}
+    is_numeric "$ra" || continue       # skip a corrupt (non-numeric) prefix
     if [ "$ra" -le "$now" ]; then
       dest="$DIR/outbox/$b"
-      if mv "$f" "$dest" 2>/dev/null; then
-        payload=$(cat "$dest" 2>/dev/null)
-        printf '%s %s\n' "$payload" "$now" >> "$DIR/fires.log"
+      if mv "$f" "$dest" 2>/dev/null; then   # <-- single commit point
+        deliver "$dest" "$now"
         rm -f "$dest"
       fi
     fi
@@ -70,12 +150,30 @@ fire_due() {
 
 mkdir -p "$DIR/outbox"
 
-while [ "$running" = 1 ]; do
-  next=$(scan_min)
+# --- startup crash recovery (M1) --------------------------------------------
+# The single commit point is the `mv` of a record out of deferred/ into outbox/.
+# A crash *after* that mv but *before* delivery+rm leaves the record stranded in
+# outbox/. On startup we sweep outbox/ and re-deliver any survivor, then rm it.
+# This realizes at-most-once-modulo-crash: a record that crashed at the commit
+# boundary fires at most once more on restart (NOT the reference's full claim-lease
+# lease — explicitly punted). Deferred re-arm needs no special code: scan_min
+# reads deferred/ from disk every iteration, so surviving pending files re-arm by
+# construction. SCHED_NO_RECOVER=1 skips this sweep (test-only negative control).
+if [ "${SCHED_NO_RECOVER:-0}" != "1" ]; then
+  for f in "$DIR"/outbox/*; do
+    [ -e "$f" ] || continue
+    now_ms; deliver "$f" "$REPLY"
+    rm -f "$f"
+  done
+fi
 
+while [ "$running" = 1 ]; do
+  next=$(scan_min)                                   # (2) next = MIN(run_at)
+
+  # ---- CHAOS HOOK: between MIN and the blocking read (the race window) ----
   if [ "$hook_on" = 1 ]; then
-    printf 'p' >&7
-    read -N 1 -u 8 _ || running=0
+    printf 'p' >&7                                   # "I am paused, post-MIN"
+    read -N 1 -u 8 _ || running=0                    # block until harness releases
   fi
 
   now_ms; now=$REPLY
@@ -84,15 +182,17 @@ while [ "$running" = 1 ]; do
     (( to_ms < 0 )) && to_ms=0
     (( to_ms > IDLE_POLL_MS )) && to_ms=$IDLE_POLL_MS
   else
-    to_ms=$IDLE_POLL_MS
+    to_ms=$IDLE_POLL_MS                               # (5) poll floor when idle
   fi
   printf -v to_s '%d.%03d' $(( to_ms / 1000 )) $(( to_ms % 1000 ))
 
-  # vvvvvvvvvvvvvvvvvvvvvvvvvvvvvv THE ONE BROKEN LINE vvvvvvvvvvvvvvvvvvvvvvvvvvv
-  # CORRECT would be: read -N 1 -t "$to_s" -u 4 _ || true   (wake on poke OR timeout)
-  # BROKEN: blind sleep ignores the wake-FIFO poke -> sleeps the stale idle_poll.
+  # >>>>>>>>>>>>>>>>>>>>>>>>>> THE ONE BROKEN LINE >>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+  # CORRECT (src/sched.sh): read -N 1 -t "$to_s" -u 4 _ || true  (wake on poke OR timeout)
+  # BROKEN (violates discipline #2/#4): a blind `sleep` ignores the wake-FIFO
+  # poke, so a publish that landed in the [MIN,read] window is not seen until
+  # the next idle_poll rescan -> fires idle_poll-late -> harness scores MISSED.
   sleep "$to_s"
-  # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ THE ONE BROKEN LINE ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  # <<<<<<<<<<<<<<<<<<<<<<<<<< THE ONE BROKEN LINE <<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
-  fire_due
+  fire_due                                            # (4) full rescan + (6) fire
 done

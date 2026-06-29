@@ -1,5 +1,26 @@
 # HANDOFF — shellmux
-Last updated: 2026-06-23 (R3 session)   |   Branch: master (clean) + private GitHub remote   |   **STATUS: COMPLETE + SHIPPABLE — all 5 DoD met; spine re-proven on real ARM64; 2 off-axis bugs fixed; packaged for v0.1.0 (README/logo/CONTRIBUTING/install.sh/--version)**
+Last updated: 2026-06-28 (R4 session)   |   Branch: master (clean) + GitHub remote   |   **STATUS: COMPLETE + SHIPPABLE — all 5 DoD met; spine re-proven on real ARM64; off-axis bugs fixed; packaged v0.1.1; R4 restored the negative-control one-knob auditability**
+
+## R4 (2026-06-28) — external full-project review + negative-control regeneration
+- Ran an independent skeptical full-project review (plan + vision + execution). Verdict: **the
+  single falsifiable claim is genuinely proven and unthreatened** — the chaos harness injects the
+  race into the exact `[next=MIN → blocking read]` window deterministically (not probabilistically),
+  miss/dup scoring is sound (idle 10000ms ≫ grace 1000ms), idle CPU ~0% is a real `do_select` block.
+  Re-verified live this session: full N=5000 = **missed=0 dup=0 ontime=5000 @ 0.00% idle CPU**, all
+  3 controls fail on-axis, full `run_all.sh` **10/10**.
+- **Fixed (the one real honesty regression): negative-control drift.** The three chaos controls
+  (`tests/negative/sched_{naivesleep,drainfirst,nocommit}.sh`) were M0-era copies; `src/sched.sh`
+  had since grown `is_numeric()` (R3), the `deliver()` indirection (M3b) and the M1 recovery sweep —
+  so `diff src/sched.sh tests/negative/<x>.sh` no longer showed "exactly one knob" (it showed those
+  hunks too). The controls still failed for the right reason, but the *advertised* one-knob
+  auditability (README:74, DEMO:44, CONTRIBUTING:16-17) was false. **Regenerated all three from the
+  CURRENT `src/sched.sh`** (deterministic generator: byte-identical body except the BROKEN banner +
+  the single violated discipline point). `nocommit` now reuses the real `deliver()`, so its only
+  diff is the removed `mv`/`rm` commit point. Re-proved: each control still fails on its axis
+  (naivesleep/drainfirst missed=120, nocommit dup=1770); correct still 0/0 over N=5000. No source,
+  doc, or proof-axis change — the advertised diff claims are now TRUE again, no doc edits needed.
+- **Off-axis findings recorded, NOT fixed (all on the broker-integration path, none touch the
+  proof axis or `src/sched.sh`'s mv commit point) — see "Open / optional" below.**
 
 ## Prod-readiness pass (2026-06-23) — packaged for public/contributor use
 - Pushed to **private** GitHub repo `bobbyrathoree/shellmux` (SSH remote `origin`); `.git` backed up before `gh` (survived intact).
@@ -204,6 +225,27 @@ throughput ceiling needs the real box).
   suite green (10/10); docs reconciled to code; all work committed to `master` (clean tree).
 
 ## Open / optional (NOT blockers — ALL 5 Definition-of-Done items are met)
+- **R4 off-axis findings — recorded, deliberately not fixed (none threaten missed=0/dup=0).** All
+  three are on the *broker-integration* PUB path, never `src/sched.sh`'s commit point or the wake
+  discipline; the chaos harness stages its own tiny complete files, so the proof is insulated from
+  all of them. Fix test-first (must-fail control each) only if hardening the broker data path:
+  1. **Non-atomic deferred staging.** `pub --delay/--at` writes the FINAL `deferred/<run_at>.<seq>`
+     name directly then pokes (`src/shellmux:285`). A large or already-due (`--delay 0` / past
+     `--at`) record can be `mv`'d by the scheduler mid-write → torn read. Fix: write a temp file in
+     the same dir, then atomic `mv` into the final deferred name, then poke.
+  2. **`seq="${RANDOM}${RANDOM}"` intra-handler collision (`src/shellmux:284`).** R3 refuted the
+     *cross-process* collision (fresh execvp reseeds RANDOM). This is the *within-one-handler*
+     case: one PUB streaming many lines at the same `run_at_ms` reuses the same process's RANDOM,
+     so two lines can collide → silent overwrite. Low-probability, off-axis, but genuinely silent.
+     Fix: pid+monotonic counter, or `mktemp`/`noclobber` retry.
+  3. **`is_numeric` accepts leading-zero prefixes.** `deferred/09.x` passes the digit check but
+     `$(( 09 - 0 ))` throws "value too great for base" (bash octal). Unreachable through the
+     validated broker (run_at_ms is always 13-digit epoch-ms; `valid_deadline` guards input) — only
+     a raw producer writing into the state dir hits it, same threat class as the R3 corrupt-deferred
+     DoS, just an incomplete guard. Fix: strip/reject leading zeros or force base-10 (`10#`).
+  Doc-drift noted (cosmetic): `docs/design.md` still shows the pre-build `topics/$T/deferred` layout
+  and a ring-drainer shape the code no longer matches; spec/README/DEMO are current.
+
 - **Evaluator loop (PROMPT §4, DoD #5): CONVERGED over two rounds — DONE, not parked.** Round-001
   surfaced the one adjacent threat (unvalidated input boundary) + a test flake; both fixed. Round-002
   re-probed and re-confirmed them fixed and found **zero new threats to the one claim** (credible
